@@ -9,6 +9,8 @@
     if (abs[0] !== '/' && !/^https?:/i.test(abs)) {
       try { abs = new URL(abs, document.baseURI).pathname; } catch (e) { abs = DEFAULT_BASE; }
     }
+    const finish = mods => { _mods = mods; return mods; };
+    // 先本地，失败回退 CDN（依赖文件未随卡片部署到 /local/car3d 时仍可用）
     return Promise.all([
       import(abs + '/three.module.js'),
       import(abs + '/GLTFLoader.js'),
@@ -28,9 +30,64 @@
         UnrealBloomPass: pp[2].UnrealBloomPass,
         OutputPass: pp[3].OutputPass
       } : null;
-      _mods = { THREE: r[0], GLTFLoader: r[1].GLTFLoader, OrbitControls: r[2].OrbitControls, post };
-      return _mods;
-    });
+      return { THREE: r[0], GLTFLoader: r[1].GLTFLoader, OrbitControls: r[2].OrbitControls, post };
+    }).catch(err => {
+      console.warn('[car-3d-card] 本地依赖加载失败，尝试 CDN 回退：', err && err.message);
+      return loadFromCDN('https://cdn.jsdelivr.net/npm/three@0.162.0')
+        .catch(() => loadFromCDN('https://unpkg.com/three@0.162.0'));
+    }).then(finish);
+  }
+
+  // ===== CDN 回退：拉取 three 及插件源码，重写内部 import 为 blob URL 后动态加载 =====
+  const _blobCache = new Map();
+  let _cdnBase = '';
+  async function cdnBlob(url) {
+    if (_blobCache.has(url)) return _blobCache.get(url);
+    const p = (async () => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + url);
+      let text = await res.text();
+      // 收集全部 import 说明符（含跨行 import {...} from '...'）
+      const specs = new Set();
+      let m;
+      const re1 = /from\s*(['"])([^'"]+)\1/g;
+      while ((m = re1.exec(text))) specs.add(m[2]);
+      const re2 = /import\s+(['"])([^'"]+)\1/g;
+      while ((m = re2.exec(text))) specs.add(m[2]);
+      const map = {};
+      await Promise.all(Array.from(specs).map(async sp => {
+        if (sp === 'three') map[sp] = await cdnBlob(_cdnBase + '/build/three.module.js');
+        else if (/^[./]/.test(sp)) map[sp] = await cdnBlob(new URL(sp, url).href);
+      }));
+      for (const sp of Object.keys(map)) {
+        text = text.split("'" + sp + "'").join("'" + map[sp] + "'");
+        text = text.split('"' + sp + '"').join('"' + map[sp] + '"');
+      }
+      return URL.createObjectURL(new Blob([text], { type: 'text/javascript' }));
+    })();
+    _blobCache.set(url, p);
+    return p;
+  }
+  async function loadFromCDN(cdn) {
+    _cdnBase = cdn;
+    const [THREE, gltf, orbit, pp] = await Promise.all([
+      import(await cdnBlob(cdn + '/build/three.module.js')),
+      import(await cdnBlob(cdn + '/examples/jsm/loaders/GLTFLoader.js')),
+      import(await cdnBlob(cdn + '/examples/jsm/controls/OrbitControls.js')),
+      Promise.all([
+        import(await cdnBlob(cdn + '/examples/jsm/postprocessing/EffectComposer.js')),
+        import(await cdnBlob(cdn + '/examples/jsm/postprocessing/RenderPass.js')),
+        import(await cdnBlob(cdn + '/examples/jsm/postprocessing/UnrealBloomPass.js')),
+        import(await cdnBlob(cdn + '/examples/jsm/postprocessing/OutputPass.js'))
+      ]).catch(() => null)
+    ]);
+    const post = pp ? {
+      EffectComposer: pp[0].EffectComposer,
+      RenderPass: pp[1].RenderPass,
+      UnrealBloomPass: pp[2].UnrealBloomPass,
+      OutputPass: pp[3].OutputPass
+    } : null;
+    return { THREE, GLTFLoader: gltf.GLTFLoader, OrbitControls: orbit.OrbitControls, post };
   }
 
   // 铰链节点（模型内已有的动画 Dummy，位于各门铰链处）
@@ -129,6 +186,7 @@
       this._config.headlight_pos = Object.assign({ front: 0.85, side: 0.70, height: 0.48 }, (config && config.headlight_pos) || {});
       this._config.taillight_pos = Object.assign({ front: 0.88, side: 0.76, height: 0.47 }, (config && config.taillight_pos) || {});
       this._config.plate_rear = Object.assign({ front: 0.97, side: 0.50, height: 0.31, tilt: 7 }, (config && config.plate_rear) || {});
+      this._modelExplicit = !!(config && config.model);
       if (!this._config.model) this._config.model = this._config.base + '/weimingming.glb';
       this._buildShell();
       this._init();
@@ -387,7 +445,17 @@
         }
 
         const loader = new GLTFLoader();
-        const gltf = await loader.loadAsync(this._config.model);
+        let gltf;
+        try {
+          gltf = await loader.loadAsync(this._config.model);
+        } catch (e) {
+          // 本地模型缺失：未显式配置 model 时回退 GitHub 仓库演示模型（约44MB，仅一次）
+          if (!this._modelExplicit && !this._triedModelCDN) {
+            this._triedModelCDN = true;
+            if (this._tip) this._tip.textContent = '本地模型缺失，正在从 GitHub 下载演示模型（约 44MB）…';
+            gltf = await loader.loadAsync('https://raw.githubusercontent.com/chaosl1996/ha-car-3d-card/main/weimingming.glb');
+          } else throw e;
+        }
         const model = gltf.scene;
         this._model = model;
 
@@ -737,7 +805,12 @@
       } catch (e) {
         console.error('[car-3d-card] init failed', e);
         if (this._tip) {
-          this._tip.textContent = '加载失败: ' + (e && e.message || e);
+          const msg = (e && e.message) || String(e);
+          this._tip.textContent = '加载失败: ' + msg;
+          if (/fetch|404|network/i.test(msg)) {
+            this._tip.textContent += '\n请检查 ' + this._config.base + '/ 下是否有依赖文件与模型 GLB；或保持外网连通（依赖与模型会自动走 CDN 回退）。';
+            this._tip.style.whiteSpace = 'pre-line';
+          }
           this._tip.style.color = '#f76';
         }
       }
@@ -1124,45 +1197,207 @@
     type: 'car-3d-card', name: '3D 汽车', description: '3D 汽车展示卡片：5门开关、车灯泛光、车牌、车窗、胎压油量HUD、自转、点击俯视'
   }]);
 
-  // ===== 可视化配置编辑器（Lovelace UI 配置模式）=====
+  // ===== 可视化配置编辑器（全量配置：基础/车门/车灯/胎压/旋转引擎/高级）=====
   class Car3DEditor extends HTMLElement {
     constructor() {
       super();
       this.attachShadow({ mode: 'open' });
-      this._config = {};
+      this._hass = null; this._config = {}; this._pickers = [];
     }
-    setConfig(config) { this._config = config || {}; this._render(); }
+    set hass(h) { this._hass = h; this._syncPickers(); }
+    setConfig(c) { this._config = c ? JSON.parse(JSON.stringify(c)) : {}; this._render(); }
     get value() { return this._config; }
-    set value(v) { this._config = v || {}; this._render(); }
-    _ch(patch) {
-      this._config = Object.assign({}, this._config, patch);
-      this.dispatchEvent(new CustomEvent('config-changed', { detail: { config: this._config } }));
-      this._render();
+    set value(v) { this._config = v ? JSON.parse(JSON.stringify(v)) : {}; this._render(); }
+    _syncPickers() { this._pickers.forEach(pp => { try { pp.hass = this._hass; } catch (e) {} }); }
+    _fire() { this.dispatchEvent(new CustomEvent('config-changed', { detail: { config: this._config } })); }
+    _get(path) {
+      let o = this._config;
+      for (const k of path) { if (o == null || typeof o !== 'object') return undefined; o = o[k]; }
+      return o;
+    }
+    _set(path, val) {
+      const walk = idx => { let o = this._config; for (let i = 0; i < idx; i++) o = o[path[i]]; return o; };
+      const o = walk(path.length - 1);
+      const k = path[path.length - 1];
+      if (val === '' || val == null) delete o[k]; else o[k] = val;
+      // 清理空对象
+      for (let i = path.length - 1; i > 0; i--) {
+        const parent = walk(i - 1), key = path[i - 1], child = parent[key];
+        if (child && typeof child === 'object' && Object.keys(child).length === 0) delete parent[key];
+        else break;
+      }
+      this._fire();
+    }
+    _css() { return 'width:100%;box-sizing:border-box;padding:6px 8px;border-radius:6px;border:1px solid var(--divider-color,#444);background:var(--card-background-color,#222);color:var(--primary-text-color,#fff);font-size:13px;'; }
+    _row(parent, label, el) {
+      const r = document.createElement('div'); r.style.margin = '8px 0';
+      if (label) {
+        const l = document.createElement('div');
+        l.textContent = label; l.style.cssText = 'font-size:12px;color:var(--secondary-text-color,#888);margin-bottom:3px;';
+        r.appendChild(l);
+      }
+      r.appendChild(el); parent.appendChild(r);
+    }
+    _section(title, open) {
+      const d = document.createElement('details'); d.open = !!open; d.style.margin = '10px 0';
+      const sm = document.createElement('summary');
+      sm.textContent = title;
+      sm.style.cssText = 'cursor:pointer;font-size:13px;font-weight:600;color:var(--primary-text-color,#fff);padding:6px 0;user-select:none;';
+      const body = document.createElement('div'); body.style.paddingTop = '4px';
+      d.appendChild(sm); d.appendChild(body);
+      return { d, body };
+    }
+    _text(parent, label, path, ph) {
+      const el = document.createElement('input');
+      el.style.cssText = this._css(); el.placeholder = ph || '';
+      el.value = this._get(path) || '';
+      el.addEventListener('change', e => this._set(path, e.target.value.trim()));
+      this._row(parent, label, el);
+    }
+    _num(parent, label, path, step, def) {
+      const el = document.createElement('input');
+      el.type = 'number'; el.step = step || '1'; el.style.cssText = this._css();
+      const cur = this._get(path);
+      el.value = cur != null ? cur : (def != null ? def : '');
+      el.addEventListener('change', e => {
+        const v = parseFloat(e.target.value);
+        this._set(path, isNaN(v) ? null : v);
+      });
+      this._row(parent, label, el);
+    }
+    _check(parent, label, path) {
+      const lab = document.createElement('label');
+      lab.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:13px;color:var(--primary-text-color,#fff);cursor:pointer;margin:8px 0;';
+      const el = document.createElement('input');
+      el.type = 'checkbox'; el.style.cssText = 'width:18px;height:18px;';
+      el.checked = !!this._get(path);
+      el.addEventListener('change', e => this._set(path, e.target.checked ? true : null));
+      const span = document.createElement('span'); span.textContent = label;
+      lab.appendChild(el); lab.appendChild(span); parent.appendChild(lab);
+    }
+    _color(parent, label, path, def) {
+      const el = document.createElement('input');
+      el.type = 'color'; el.style.cssText = this._css() + 'height:36px;padding:2px;';
+      const cur = this._get(path);
+      el.value = /^#[0-9a-fA-F]{6}$/.test(cur || '') ? cur : (def || '#0e0e0e');
+      el.addEventListener('input', e => this._set(path, e.target.value));
+      this._row(parent, label, el);
+    }
+    _select(parent, label, path, options) {
+      const el = document.createElement('select');
+      el.style.cssText = this._css();
+      const cur = this._get(path);
+      options.forEach(([v, t], i) => {
+        const o = document.createElement('option');
+        o.value = v; o.textContent = t;
+        if (cur === v || (cur == null && i === 0)) o.selected = true;
+        el.appendChild(o);
+      });
+      el.addEventListener('change', e => this._set(path, e.target.value));
+      this._row(parent, label, el);
+    }
+    _picker(parent, label, path, domain) {
+      let el;
+      if (customElements.get('ha-entity-picker')) {
+        el = document.createElement('ha-entity-picker');
+        el.setAttribute('label', '');
+        el.allowCustomEntity = true;
+        if (domain) el.domain = domain;
+        el.value = this._get(path) || '';
+        if (this._hass) el.hass = this._hass;
+        this._pickers.push(el);
+        el.addEventListener('value-changed', ev => this._set(path, ev.detail.value));
+      } else {
+        el = document.createElement('input');
+        el.style.cssText = this._css();
+        el.placeholder = '实体ID 如 binary_sensor.xxx';
+        el.value = this._get(path) || '';
+        el.addEventListener('change', ev => this._set(path, ev.target.value.trim()));
+      }
+      this._row(parent, label, el);
     }
     _render() {
-      const c = this._config || {};
-      const inp = 'width:100%;box-sizing:border-box;padding:6px 8px;border-radius:6px;border:1px solid var(--divider-color,#444);background:var(--card-background-color,#222);color:var(--primary-text-color,#fff);font-size:13px;';
-      const row = (label, inner) =>
-        '<div style="margin:10px 0"><div style="font-size:12px;color:var(--secondary-text-color,#888);margin-bottom:3px">' + label + '</div>' + inner + '</div>';
-      this.shadowRoot.innerHTML =
-        '<div style="padding:4px 12px 12px">' +
-        row('标题', '<input id="e-title" style="' + inp + '" value="' + (c.title || '') + '" placeholder="可选">') +
-        row('车牌号', '<input id="e-plate" style="' + inp + '" value="' + (c.plate_number || '') + '" placeholder="如 甘M·DM815">') +
-        row('车牌颜色', '<select id="e-ptype" style="' + inp + '"><option value="blue"' + (c.plate_type !== 'green' ? ' selected' : '') + '>蓝色（燃油车）</option><option value="green"' + (c.plate_type === 'green' ? ' selected' : '') + '>绿色（新能源）</option></select>') +
-        row('背景颜色', '<input id="e-bg" type="color" style="' + inp + 'height:36px" value="' + (c.bg_color || '#0e0e0e') + '">') +
-        row('默认自动旋转', '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--primary-text-color,#fff)"><input id="e-ar" type="checkbox" style="width:18px;height:18px"' + (c.auto_rotate ? ' checked' : '') + '>开启后进入卡片即自动旋转（点击车身进入俯视时暂停）</label>') +
-        row('旋转速度', '<input id="e-rs" type="number" step="0.1" min="0.1" style="' + inp + '" value="' + (c.rotate_speed != null ? c.rotate_speed : 1) + '">') +
-        row('卡片高度（px）', '<input id="e-ht" type="number" step="10" min="200" style="' + inp + '" value="' + (c.height != null ? c.height : 400) + '">') +
-        '<div style="font-size:11px;color:var(--secondary-text-color,#888);margin-top:12px;line-height:1.5">提示：门/灯/车窗/胎压/油量等实体绑定请点击右下角"显示代码编辑器"切换 YAML 模式配置。点击 3D 车身可切换俯视视角（车头朝上，轮毂处显示胎压温度）。</div>' +
-        '</div>';
-      const $ = id => this.shadowRoot.getElementById(id);
-      $('e-title').onchange = e => this._ch({ title: e.target.value });
-      $('e-plate').onchange = e => this._ch({ plate_number: e.target.value });
-      $('e-ptype').onchange = e => this._ch({ plate_type: e.target.value });
-      $('e-bg').oninput = e => this._ch({ bg_color: e.target.value });
-      $('e-ar').onchange = e => this._ch({ auto_rotate: e.target.checked });
-      $('e-rs').onchange = e => this._ch({ rotate_speed: parseFloat(e.target.value) || 1 });
-      $('e-ht').onchange = e => this._ch({ height: parseInt(e.target.value) || 400 });
+      const root = this.shadowRoot;
+      root.innerHTML = '';
+      this._pickers = [];
+      const cont = document.createElement('div');
+      cont.style.cssText = 'padding:4px 12px 12px;';
+      root.appendChild(cont);
+
+      const s1 = this._section('基础', true);
+      this._text(s1.body, '标题', ['title']);
+      this._num(s1.body, '卡片高度 (px)', ['height'], '10', 400);
+      this._color(s1.body, '背景颜色', ['bg_color'], '#0e0e0e');
+      cont.appendChild(s1.d);
+
+      const s2 = this._section('车牌', true);
+      this._text(s2.body, '车牌号', ['plate_number'], '如 甘M·DM815');
+      this._select(s2.body, '车牌颜色', ['plate_type'], [['blue', '蓝色（燃油车）'], ['green', '绿色（新能源）']]);
+      cont.appendChild(s2.d);
+
+      const s3 = this._section('车门', true);
+      [['lf', '左前门'], ['rf', '右前门'], ['lr', '左后门'], ['rr', '右后门'], ['trunk', '后备箱/尾门']]
+        .forEach(([k, lb]) => this._picker(s3.body, lb, ['door_entities', k], 'binary_sensor'));
+      this._picker(s3.body, '门锁实体（未配单独门实体时：解锁=全车门开）', ['door_lock_entity'], 'lock');
+      this._num(s3.body, '车门开启角度 (°)', ['door_angle'], '1', 62);
+      this._num(s3.body, '尾门开启角度 (°)', ['trunk_angle'], '1', 75);
+      cont.appendChild(s3.d);
+
+      const s4 = this._section('车灯与车窗', true);
+      this._picker(s4.body, '大灯实体', ['headlight_entity'], 'light');
+      this._picker(s4.body, '尾灯实体', ['taillight_entity'], 'light');
+      this._picker(s4.body, '总灯实体（大小灯共用，优先级低于上面两个）', ['light_entity'], 'light');
+      this._picker(s4.body, '车窗实体（控制四个车门玻璃透明度）', ['window_entity'], 'binary_sensor');
+      this._color(s4.body, '大灯颜色', ['light_color'], '#fff2cc');
+      cont.appendChild(s4.d);
+
+      const s5 = this._section('胎压 / 温度 / 油量', true);
+      const posName = { lf: '左前', rf: '右前', lr: '左后', rr: '右后' };
+      ['lf', 'rf', 'lr', 'rr'].forEach(k => this._picker(s5.body, '胎压 · ' + posName[k], ['tpms', k], 'sensor'));
+      ['lf', 'rf', 'lr', 'rr'].forEach(k => this._picker(s5.body, '胎温 · ' + posName[k], ['tpms', 'temp', k], 'sensor'));
+      this._text(s5.body, '胎压单位', ['tpms', 'unit'], 'bar');
+      this._picker(s5.body, '油量实体 (%)', ['fuel_entity'], 'sensor');
+      cont.appendChild(s5.d);
+
+      const s6 = this._section('旋转与引擎', true);
+      this._check(s6.body, '默认自动旋转（俯视时自动暂停）', ['auto_rotate']);
+      this._num(s6.body, '旋转速度', ['rotate_speed'], '0.1', 1);
+      this._picker(s6.body, '自转控制实体', ['auto_rotate_entity'], 'input_boolean');
+      this._picker(s6.body, '引擎状态实体（运转时车轮旋转+微震）', ['engine_entity']);
+      this._picker(s6.body, '车速实体 (km/h，按实际车速调轮速)', ['wheel_speed_entity'], 'sensor');
+      this._check(s6.body, '引擎怠速微震', ['engine_shake']);
+      cont.appendChild(s6.d);
+
+      const s7 = this._section('高级（模型与视觉效果）', false);
+      this._text(s7.body, '模型 GLB 地址', ['model']);
+      this._text(s7.body, '依赖基础路径 base（HACS 安装填 /local/community/ha-car-3d-card）', ['base']);
+      this._num(s7.body, '模型水平朝向 (°)', ['model_rotation'], '1', 180);
+      this._num(s7.body, '泛光强度', ['bloom_strength'], '0.05', 0.55);
+      this._num(s7.body, '泛光半径', ['bloom_radius'], '0.05', 0.55);
+      this._num(s7.body, '泛光阈值', ['bloom_threshold'], '0.05', 1);
+      this._check(s7.body, '开灯照亮地面 (spotlight)', ['spotlight']);
+      this._check(s7.body, '显示地面', ['show_ground']);
+      this._check(s7.body, '车轮持续自转 (wheel_spin)', ['wheel_spin']);
+      this._num(s7.body, '前牌高度比例', ['plate_height'], '0.01', 0.34);
+      this._num(s7.body, '后牌 · 沿车长位置', ['plate_rear', 'front'], '0.01', 0.97);
+      this._num(s7.body, '后牌 · 左右偏移（正=从车后看往左）', ['plate_rear', 'side'], '0.01', 0.5);
+      this._num(s7.body, '后牌 · 高度比例', ['plate_rear', 'height'], '0.01', 0.31);
+      this._num(s7.body, '后牌 · 微旋角 (°)', ['plate_rear', 'tilt'], '1', 7);
+      this._num(s7.body, '大灯 · 前后位置', ['headlight_pos', 'front'], '0.01', 0.85);
+      this._num(s7.body, '大灯 · 左右位置', ['headlight_pos', 'side'], '0.01', 0.7);
+      this._num(s7.body, '大灯 · 高度比例', ['headlight_pos', 'height'], '0.01', 0.48);
+      this._num(s7.body, '尾灯 · 前后位置', ['taillight_pos', 'front'], '0.01', 0.88);
+      this._num(s7.body, '尾灯 · 左右位置', ['taillight_pos', 'side'], '0.01', 0.76);
+      this._num(s7.body, '尾灯 · 高度比例', ['taillight_pos', 'height'], '0.01', 0.47);
+      cont.appendChild(s7.d);
+
+      // 实体选择器组件晚注册时，注册完成后重渲染升级为下拉选择
+      if (!this._pickerWatched) {
+        this._pickerWatched = true;
+        customElements.whenDefined('ha-entity-picker').then(() => {
+          if (this.isConnected) this._render();
+        }).catch(() => {});
+      }
     }
   }
   if (!customElements.get('car-3d-card-editor')) customElements.define('car-3d-card-editor', Car3DEditor);

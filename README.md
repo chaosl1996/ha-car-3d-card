@@ -10,7 +10,7 @@
 - **5 门独立开关**：四个车门 + 侧开式尾门，全部绕垂直轴开合（车门向外开），角度可在 YAML 配置
 - **车灯物理泛光**：大灯/尾灯独立实体控制，灯体 emissive 过曝 + Bloom 泛光 + SpotLight 地面照明，无贴图假光
 - **车牌生成**：Canvas 绘制蓝牌/绿牌（新能源），前牌大灯之间、后牌保险杠牌照位，位置/微旋角可调
-- **车窗联动**：全车玻璃统一材质，门玻璃随车窗实体开/关渐变透明
+- **车窗联动**：全车玻璃统一材质；四门车窗可绑定独立实体分别控制开/关渐变，也可用统一实体
 - **胎压 + 温度**：左下角 HUD 常显四轮胎压；点击车身进入俯视后，轮毂处浮出胎压+温度标签
 - **俯视模式**：点击车身一键切换车尾正上方俯视（车头朝上），俯视下强制停止自转；再点恢复
 - **自动旋转**：默认开关 + 旋转速度可配，可绑定 HA 实体远程控制
@@ -86,6 +86,12 @@ light_entity: light.car_light      # 大小灯共用时配置（优先级低于�
 
 # 车窗（仅影响四个车门玻璃）
 window_entity: binary_sensor.car_window
+# 四窗独立控制（优先级高于统一实体）
+window_entities:
+  lf: binary_sensor.window_lf
+  rf: binary_sensor.window_rf
+  lr: binary_sensor.window_lr
+  rr: binary_sensor.window_rr
 
 # 胎压 + 温度（温度读 state 或 temperature 属性）
 tpms:
@@ -133,7 +139,8 @@ wheel_speed_entity: sensor.car_speed
 | `door_entities` | 空 | 5 门实体映射 |
 | `door_lock_entity` | 空 | 门锁实体 |
 | `headlight_entity` / `taillight_entity` / `light_entity` | 空 | 车灯实体 |
-| `window_entity` | 空 | 车窗实体 |
+| `window_entity` | 空 | 车窗统一实体 |
+| `window_entities` | 空 | 四窗独立实体 `{lf, rf, lr, rr}`（优先） |
 | `tpms` | 空 | 胎压/温度实体映射 + `unit` |
 | `fuel_entity` | 空 | 油量实体 |
 | `engine_entity` | 空 | 引擎状态实体（on/数值>0 = 运转，驱动车轮旋转+微震） |

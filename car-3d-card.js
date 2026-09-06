@@ -173,6 +173,7 @@
         taillight_entity: null,
         light_entity: null,
         window_entity: null,
+        window_entities: null,   // 四窗独立：{lf, rf, lr, rr}，优先级高于 window_entity
         tpms: { lf: null, rf: null, lr: null, rr: null, unit: 'bar', temp: { lf: null, rf: null, lr: null, rr: null } },
         fuel_entity: null,
         auto_rotate_entity: null,
@@ -958,10 +959,17 @@
       }
       return false;
     }
-    _windowOpenState() {
+    _windowState(part) {
+      // part: lf/rf/lr/rr；四窗独立实体优先，回退统一 window_entity
       const c = this._config;
-      if (!c.window_entity) return false;
-      return isTruthy(readState(this._hass, c.window_entity));
+      const we = (c.window_entities && typeof c.window_entities === 'object') ? c.window_entities : {};
+      const ent = we[part] || we[part + '_window'];
+      if (ent) {
+        const st = readState(this._hass, ent);
+        if (st != null) return isTruthy(st);
+      }
+      if (c.window_entity) return isTruthy(readState(this._hass, c.window_entity));
+      return false;
     }
     _rotateStateEff() {
       const c = this._config;
@@ -1016,7 +1024,10 @@
         const ang = d.part === 'trunk' ? ta : da;
         d.target = this._doorOpenState(d.part) ? d.dir * ang : 0;
       });
-      this._winOpenTgt = this._windowOpenState() ? 1 : 0;
+      this._winOpenTgt = {
+        lf: this._windowState('lf') ? 1 : 0, rf: this._windowState('rf') ? 1 : 0,
+        lr: this._windowState('lr') ? 1 : 0, rr: this._windowState('rr') ? 1 : 0
+      };
 
       let rot = this._rotateStateEff();
       if (this._topView) rot = false; // 俯视角度下不旋转
@@ -1087,18 +1098,21 @@
         d.current += (d.target - d.current) * 0.1;
         d.pivot.rotation.y = d.current;
       });
-      // 车窗透明
-      const tgtWin = this._winOpenTgt || 0;
-      this._winCur = this._winCur == null ? 0 : this._winCur;
-      this._winCur += (tgtWin - this._winCur) * 0.15;
-      const winOpacity = 1 - this._winCur * 0.95;
+      // 车窗透明（四门独立渐变；前挡/固定玻璃恒定）
+      this._winCur = this._winCur || {};
+      const TGTKEY = { '26_lf_door_glass': 'lf', '32_lr_door_glass': 'lr', '35_rf_door_glass': 'rf', '41_rr_door_glass': 'rr' };
       this._windows.forEach(w => {
-        // 窗开关只作用于门玻璃；前挡/固定玻璃保持恒定
-        const base = w.base || 0.35;
-        const op = w.type === 'door' ? (0.05 + winOpacity * (base - 0.05)) : base;
-        w.saved.forEach(s => {
-          if (!s.m) return;
-          try { s.m.opacity = op; s.m.transparent = true; } catch (e) {}
+        const base = w.base || 0.4;
+        if (w.type !== 'door') { w.saved.forEach(sd => { if (sd.m) sd.m.opacity = base; }); return; }
+        const k = TGTKEY[w.mesh.name] || 'lf';
+        const tgt = (this._winOpenTgt && this._winOpenTgt[k]) || 0;
+        const cur = this._winCur[k] == null ? 0 : this._winCur[k];
+        this._winCur[k] = cur + (tgt - cur) * 0.15;
+        const t = this._winCur[k];
+        const op = 0.05 + (1 - t * 0.95) * (base - 0.05);
+        w.saved.forEach(sd => {
+          if (!sd.m) return;
+          try { sd.m.opacity = op; sd.m.transparent = true; } catch (e) {}
         });
       });
       // 车灯：自发光 + 特效可见性
@@ -1209,14 +1223,29 @@
     get value() { return this._config; }
     set value(v) { this._config = v ? JSON.parse(JSON.stringify(v)) : {}; this._render(); }
     _syncPickers() { this._pickers.forEach(pp => { try { pp.hass = this._hass; } catch (e) {} }); }
-    _fire() { this.dispatchEvent(new CustomEvent('config-changed', { detail: { config: this._config } })); }
+    _fire() {
+      // HA 编辑器协议：向 HA 广播 config-changed（detail.config 为新配置），HA 随后读 get value()
+      // microtask 确保本轮同步赋值全部完成后再广播
+      Promise.resolve().then(() => {
+        this.dispatchEvent(new CustomEvent('config-changed', {
+          detail: { config: this._config }
+        }));
+      });
+    }
     _get(path) {
       let o = this._config;
       for (const k of path) { if (o == null || typeof o !== 'object') return undefined; o = o[k]; }
       return o;
     }
     _set(path, val) {
-      const walk = idx => { let o = this._config; for (let i = 0; i < idx; i++) o = o[path[i]]; return o; };
+      const walk = idx => {
+        let o = this._config;
+        for (let i = 0; i < idx; i++) {
+          if (o[path[i]] == null || typeof o[path[i]] !== 'object') o[path[i]] = {};
+          o = o[path[i]];
+        }
+        return o;
+      };
       const o = walk(path.length - 1);
       const k = path[path.length - 1];
       if (val === '' || val == null) delete o[k]; else o[k] = val;
@@ -1306,7 +1335,9 @@
         el.value = this._get(path) || '';
         if (this._hass) el.hass = this._hass;
         this._pickers.push(el);
-        el.addEventListener('value-changed', ev => this._set(path, ev.detail.value));
+        el.addEventListener('value-changed', ev => {
+          if (ev.detail && ev.detail.value != null) this._set(path, ev.detail.value);
+        });
       } else {
         el = document.createElement('input');
         el.style.cssText = this._css();
@@ -1347,7 +1378,11 @@
       this._picker(s4.body, '大灯实体', ['headlight_entity'], 'light');
       this._picker(s4.body, '尾灯实体', ['taillight_entity'], 'light');
       this._picker(s4.body, '总灯实体（大小灯共用，优先级低于上面两个）', ['light_entity'], 'light');
-      this._picker(s4.body, '车窗实体（控制四个车门玻璃透明度）', ['window_entity'], 'binary_sensor');
+      this._picker(s4.body, '车窗 · 左前', ['window_entities', 'lf'], 'binary_sensor');
+      this._picker(s4.body, '车窗 · 右前', ['window_entities', 'rf'], 'binary_sensor');
+      this._picker(s4.body, '车窗 · 左后', ['window_entities', 'lr'], 'binary_sensor');
+      this._picker(s4.body, '车窗 · 右后', ['window_entities', 'rr'], 'binary_sensor');
+      this._picker(s4.body, '车窗统一实体（未配单独窗实体时全部生效）', ['window_entity'], 'binary_sensor');
       this._color(s4.body, '大灯颜色', ['light_color'], '#fff2cc');
       cont.appendChild(s4.d);
 

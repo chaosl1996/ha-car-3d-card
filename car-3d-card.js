@@ -562,14 +562,20 @@
           color: 0xffffff, roughness: 0.06, metalness: 0.0,
           transparent: true, opacity: 0.28
         }));
-        // 车身玻璃：x<0 前挡保持透亮，x>0 的后侧角窗拆出（单独调暗）
+        // 车身玻璃拆前后段（后段=后侧角窗，材质稍后统一替换）
         splitByX('08_car_body_glass', 'rearBodyGlass', new THREE.MeshStandardMaterial({
           color: 0x99b3bf, roughness: 0.12, metalness: 0.0,
-          transparent: true, opacity: 0.25
+          transparent: true, opacity: 0.4
         }));
 
-        // ===== 车窗（前挡 0.35；其余略暗 0.45；门玻璃随窗状态 0.45↔0.05）=====
+        // ===== 车窗（全部统一：同一材质同透明度，弃用模型原始白雾贴图）=====
         this._windows = [];
+        const GLASS_OPACITY = 0.40;
+        const mkGlassMat = () => new THREE.MeshPhysicalMaterial({
+          color: 0x9fb8c4, roughness: 0.08, metalness: 0.0,
+          transparent: true, opacity: GLASS_OPACITY,
+          envMapIntensity: 0.9, clearcoat: 0.5, clearcoatRoughness: 0.1
+        });
         model.traverse(o => {
           if (!o.isMesh) return;
           const bnm = baseName(o.name || '');
@@ -578,28 +584,9 @@
           if (!type && bnm === '08_car_body_glass') type = 'windshield';
           if (!type && EXTRA_GLASS.indexOf(bnm) >= 0) type = 'top';
           if (!type) return;
-          const mats = Array.isArray(o.material) ? o.material.slice() : [o.material];
-          const saved = mats.map(m => ({ m, o: m.opacity ?? 1, tm: m.transparent ?? false }));
-          const base = type === 'windshield' ? 0.22 : 0.45;
-          saved.forEach(s => {
-            if (!s.m) return;
-            if (type === 'windshield') {
-              // 前挡：弃用原白雾贴图材质，重建高透玻璃（透亮不浑浊）
-              const nm = new THREE.MeshPhysicalMaterial({
-                color: 0xd6e9f5, roughness: 0.05, metalness: 0,
-                transparent: true, opacity: base,
-                envMapIntensity: 1.2, clearcoat: 1, clearcoatRoughness: 0.06
-              });
-              if (Array.isArray(o.material) && mats.length > 1) {
-                const bi = mats.indexOf(s.m); if (bi >= 0) o.material[bi] = nm;
-              } else o.material = nm;
-              s.m = nm;
-            } else {
-              s.m.opacity = base; s.m.transparent = true;
-              s.m.color.multiplyScalar(0.72); // 除前挡外整体调暗
-            }
-          });
-          this._windows.push({ mesh: o, type, saved, base });
+          const nm = mkGlassMat();
+          o.material = nm; // 统一替换（含数组材质，单材质渲染全部组）
+          this._windows.push({ mesh: o, type, saved: [{ m: nm }], base: GLASS_OPACITY });
         });
 
         // ===== 车灯 mesh（严格匹配，排除牌照等）=====

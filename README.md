@@ -15,6 +15,7 @@
 - **俯视模式**：点击车身一键切换车尾正上方俯视（车头朝上），俯视下强制停止自转；再点恢复
 - **自动旋转**：默认开关 + 旋转速度可配，可绑定 HA 实体远程控制
 - **油量显示**：油量实体 + 渐变色进度条
+- **引擎联动**：引擎实体运转时车轮持续旋转模拟前进（辐条可见转动），并伴随怠速微震；可绑车速实体按实际车速调节轮速
 - **可视化编辑器**：HA 卡片编辑界面直接配置标题、车牌、背景色、自动旋转等常用项，无需写 YAML
 
 ## 安装
@@ -102,6 +103,11 @@ fuel_entity: sensor.car_fuel
 
 # 自动旋转开关实体（按钮远程控制自转）
 auto_rotate_entity: input_boolean.car_rotate
+
+# 引擎状态（on / 数值>0 = 运转）：运转时车轮旋转模拟前进 + 怠速微震
+engine_entity: binary_sensor.car_engine
+# 可选：车速实体(km/h)，按实际车速调节轮速（缺省用 wheel_cruise_speed 巡航速度）
+wheel_speed_entity: sensor.car_speed
 ```
 
 ## 全部配置项
@@ -128,6 +134,10 @@ auto_rotate_entity: input_boolean.car_rotate
 | `window_entity` | 空 | 车窗实体 |
 | `tpms` | 空 | 胎压/温度实体映射 + `unit` |
 | `fuel_entity` | 空 | 油量实体 |
+| `engine_entity` | 空 | 引擎状态实体（on/数值>0 = 运转，驱动车轮旋转+微震） |
+| `wheel_speed_entity` | 空 | 车速实体（km/h），运转时按车速调轮速 |
+| `wheel_cruise_speed` | `60` | 无车速实体时的模拟巡航速度（km/h） |
+| `engine_shake` | `true` | 引擎运转时怠速微震 |
 | `light_color` | `#fff2cc` | 大灯颜色 |
 | `headlight_pos` / `taillight_pos` | 见源码 | 灯位比例定位 `{front, side, height}` |
 | `spotlight` | `true` | 开灯时照亮地面 |

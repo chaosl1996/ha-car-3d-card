@@ -118,7 +118,11 @@
         window_entity: null,
         tpms: { lf: null, rf: null, lr: null, rr: null, unit: 'bar', temp: { lf: null, rf: null, lr: null, rr: null } },
         fuel_entity: null,
-        auto_rotate_entity: null
+        auto_rotate_entity: null,
+        engine_entity: null,      // 引擎状态实体（on/数值>0 = 运转）
+        wheel_speed_entity: null, // 可选：车速实体(km/h)，运转时按车速调轮速
+        wheel_cruise_speed: 60,   // 无车速实体时的模拟巡航速度(km/h)
+        engine_shake: true        // 引擎运转时怠速微震
       }, config || {});
       this._config.tpms = Object.assign({ lf: null, rf: null, lr: null, rr: null, unit: 'bar', temp: { lf: null, rf: null, lr: null, rr: null } }, (config && config.tpms) || {});
       this._config.tpms.temp = Object.assign({ lf: null, rf: null, lr: null, rr: null }, (config && config.tpms && config.tpms.temp) || {});
@@ -503,11 +507,19 @@
           }
         });
 
-        // 车轮（自转可选，默认关）
-        this._wheels = [];
+        // 车轮旋转器：绕世界宽轴（车宽方向）旋转，引擎运转时模拟前进
+        this._wheels = []; this._wheelSpinners = [];
+        model.updateMatrixWorld(true);
         WHEEL_DUMMIES.forEach(dn => {
           const d = model.getObjectByName(dn);
-          if (d) d.traverse(c => { if (c.isMesh) this._wheels.push(c); });
+          if (!d || !d.parent) return;
+          d.traverse(c => { if (c.isMesh) this._wheels.push(c); });
+          // 世界宽轴转到 dummy 父空间（模型含 roll/yaw 旋转，轴需换算）
+          const pq = new THREE.Quaternion();
+          d.parent.getWorldQuaternion(pq);
+          const axis = this._widthAxis.clone()
+            .applyQuaternion(pq.clone().invert()).normalize();
+          this._wheelSpinners.push({ dummy: d, axis, q: new THREE.Quaternion() });
         });
 
         // ===== mesh 拆分（几何横贯全车的部件按局部 x 分车头/车尾两段）=====
@@ -649,6 +661,13 @@
         this._carBox.setFromObject(model);
         this._groundY = this._carBox.min.y;
         if (this._ground) this._ground.position.y = this._groundY + 0.002;
+
+        // ===== 引擎震动组：yawGroup 与全部门 pivot 整体收入（仅平移，保持门世界对齐）=====
+        const shakeGroup = new THREE.Group();
+        scene.add(shakeGroup);
+        shakeGroup.add(yawGroup);
+        this._doors.forEach(d => shakeGroup.add(d.pivot));
+        this._shakeGroup = shakeGroup;
 
         // ===== 灯光特效（按整车包围盒比例定位，避免几何偏移导致灯位漂移）=====
         this._lampEffects = [];
@@ -892,6 +911,23 @@
       }
       return !!c.auto_rotate;
     }
+    _engineEff() {
+      const c = this._config;
+      if (!c.engine_entity) return false;
+      const st = readState(this._hass, c.engine_entity);
+      if (st == null) return false;
+      if (isTruthy(st)) return true;
+      const n = parseFloat(st);
+      return !isNaN(n) && n > 0; // sensor 数值（转速/功率等）>0 视为运转
+    }
+    _wheelOmega() {
+      // 视觉轮速：km/h → rad/s（含降速系数，真实角速度视觉上会闪烁）
+      const c = this._config;
+      let v = NaN;
+      if (c.wheel_speed_entity) v = toNum(readState(this._hass, c.wheel_speed_entity), NaN);
+      if (isNaN(v)) v = toNum(c.wheel_cruise_speed, 60);
+      return Math.max(0, v) * 0.12;
+    }
     _lightsEff() {
       const c = this._config;
       let head = false, tail = false;
@@ -1029,11 +1065,28 @@
       applyL(this._tailLights, tail, this._tailLightColor, 9.0);
       this._lampEffects.forEach(fx => { fx.group.visible = fx.isHead ? head : tail; });
 
-      // 车轮自转（可选）
-      if (this._config.wheel_spin && this._wheels.length) {
-        const sp = toNum(this._config.rotate_speed, 1.0);
-        this._wheels.forEach(w => { w.rotation.x += 0.05 * Math.max(0.1, sp); });
+      // 车轮：引擎运转（或 wheel_spin 强制）时绕车宽轴旋转模拟前进
+      const engOn = this._engineEff();
+      const spinOn = engOn || !!this._config.wheel_spin;
+      const now = performance.now();
+      const dt = Math.min(0.05, (now - (this._lastT || now)) / 1000);
+      if (spinOn && this._wheelSpinners && this._wheelSpinners.length) {
+        const om = this._wheelOmega();
+        this._wheelSpinners.forEach(ws => {
+          ws.q.setFromAxisAngle(ws.axis, om * dt);
+          ws.dummy.quaternion.premultiply(ws.q);
+        });
       }
+      // 引擎怠速微震（双频小幅，门 pivot 同组不脱节）
+      if (this._shakeGroup) {
+        if (engOn && this._config.engine_shake !== false) {
+          const t = now / 1000;
+          this._shakeGroup.position.y = Math.sin(t * 28) * 0.0016 + Math.sin(t * 17.3) * 0.0009;
+        } else {
+          this._shakeGroup.position.y = 0;
+        }
+      }
+      this._lastT = now;
 
       // 相机过渡动画（进入/退出俯视）
       if (this._camTween) {

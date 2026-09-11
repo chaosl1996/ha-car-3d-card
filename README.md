@@ -45,6 +45,8 @@ HA 对 `/local` 静态文件下发 **31 天强缓存**（`Cache-Control: max-age
 
 （数字任意，没出现过即可。改动 URL = 缓存键变化 = 必拉新文件。）验证：F12 控制台应显示 `CAR-3D-CARD v5.0.0`。
 
+> **若无痕窗口也加载旧版**：检查 `/config/www/community/ha-car-3d-card/` 下是否有残留的 `car-3d-card.js.gz` —— HA 会优先发送预压缩变体，旧升级残留的 .gz 会让所有浏览器（包括无痕）拿到旧代码，删掉即可。
+
 ## 手动安装
 
 1. 下载 `release.zip`，解压得到 16 个文件

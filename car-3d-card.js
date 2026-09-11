@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  console.info('%c CAR-3D-CARD %c v5.0.0 ', 'background:#4a8bff;color:#fff;border-radius:3px 0 0 3px;padding:1px 4px', 'background:#222;color:#fff;border-radius:0 3px 3px 0;padding:1px 4px');
+  console.info('%c CAR-3D-CARD %c v5.1.0 ', 'background:#4a8bff;color:#fff;border-radius:3px 0 0 3px;padding:1px 4px', 'background:#222;color:#fff;border-radius:0 3px 3px 0;padding:1px 4px');
   const DEFAULT_BASE = '/local/car3d';
   const HACS_BASE = '/local/community/ha-car-3d-card'; // HACS zip_release 解压目录
   const GITHUB_MODEL = 'https://raw.githubusercontent.com/chaosl1996/ha-car-3d-card/main/weimingming.glb';
@@ -372,7 +372,7 @@
       const T = this.THREE;
       if (!T || !this._camera || !this._controls || this._camTween) return;
       if (this._topView) {
-        const sv = this._savedView || { pos: new T.Vector3(4.6, 2.4, 5.6), target: new T.Vector3(0, 0.3, 0) };
+        const sv = this._savedView || { pos: new T.Vector3(3.9, 2.0, 4.7), target: new T.Vector3(0, 0.3, 0) };
         this._startCamTween(sv.pos.clone(), sv.target.clone());
         this._topView = false;
       } else {
@@ -387,7 +387,7 @@
         const halfW = (wR.hi - wR.lo) / 2;
         const span = Math.max(halfLen * 2, halfW * 2);
         const pos = center.clone().addScaledVector(this._forward, -halfLen * 0.42);
-        pos.y = center.y + span * 1.15 + 1.4;
+        pos.y = center.y + span * 1.4 + 2.0;
         this._startCamTween(pos, center);
         this._topView = true;
         this._controls.autoRotate = false; // 俯视下不旋转
@@ -471,7 +471,7 @@
         dir2.position.set(-6, 4, -5); scene.add(dir2);
 
         const camera = new THREE.PerspectiveCamera(42, w0 / h0, 0.1, 1000);
-        camera.position.set(4.6, 2.4, 5.6);
+        camera.position.set(3.9, 2.0, 4.7);
         this._camera = camera;
 
         // ===== 后处理管线：Render → UnrealBloom → Output(ACES+sRGB) =====

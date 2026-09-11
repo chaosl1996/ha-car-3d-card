@@ -1,183 +1,129 @@
-# HA Car 3D Card · 3D 汽车展示卡片
+# 3D 汽车展示卡片 (Car 3D Card)
 
-适用于 [Home Assistant](https://www.home-assistant.io/) 的 Lovelace 3D 汽车卡片：加载 GLB 模型实时渲染，车门/车灯/车窗与 HA 实体联动，支持点击车身切换俯视视角查看四轮胎压与温度。
+Home Assistant Lovelace 自定义卡片：在仪表盘中展示一辆可交互的 3D 汽车（Three.js 渲染），支持车门/尾门/车窗随实体状态开合、车灯泛光、车牌、胎压油量 HUD、自动旋转、点击车身切换俯视查看四轮胎压。
 
-> 演示模型为坦克 300（侧开尾门备胎版），内置完整车漆、内饰、灯光材质修正。
+所有依赖（Three.js、后处理）与默认模型均已打包在发布包内，**下载即可用，无需外网 CDN**。
 
-## 功能特性
+## 功能
 
-- **3D 渲染**：Three.js + PMREM 环境反射 + ACES 色调映射 + UnrealBloom 泛光，车漆/玻璃/金属质感真实
-- **5 门独立开关**：四个车门 + 侧开式尾门，全部绕垂直轴开合（车门向外开），角度可在 YAML 配置
-- **车灯物理泛光**：大灯/尾灯独立实体控制，灯体 emissive 过曝 + Bloom 泛光 + SpotLight 地面照明，无贴图假光
-- **车牌生成**：Canvas 绘制蓝牌/绿牌（新能源），前牌大灯之间、后牌保险杠牌照位，位置/微旋角可调
-- **车窗联动**：全车玻璃统一材质；四门车窗可绑定独立实体分别控制开/关渐变，也可用统一实体
-- **胎压 + 温度**：左下角 HUD 常显四轮胎压；点击车身进入俯视后，轮毂处浮出胎压+温度标签
-- **俯视模式**：点击车身一键切换车尾正上方俯视（车头朝上），俯视下强制停止自转；再点恢复
-- **自动旋转**：默认开关 + 旋转速度可配，可绑定 HA 实体远程控制
-- **油量显示**：油量实体 + 渐变色进度条
-- **引擎联动**：引擎实体运转时车轮持续旋转模拟前进（辐条可见转动），并伴随怠速微震；可绑车速实体按实际车速调节轮速
-- **可视化编辑器**：HA 卡片编辑界面可视化配置全部选项——基础/车牌/车门/车灯/胎压温度油量/旋转引擎/高级（实体均为下拉选择器），无需写 YAML
+- 🚗 3D 车模展示，鼠标拖拽旋转 / 滚轮缩放
+- 🚪 四门 + 尾门随实体状态（lock / binary_sensor）开合动画，开合角度可调
+- 💡 大灯 / 尾灯随 light 实体点亮：自发光 + 泛光 + 地面光池；近光/远光实体并联（任一亮即点亮）
+- 🌈 背景颜色与不透明度可调（半透明背景可透出仪表盘主题）；地面展示盘大小可调，浅色背景自动切换为软阴影
+- 🪟 车窗玻璃分色：前挡清亮，其余墨镜色（磨砂隐私玻璃质感）；四门窗 + 顶窗/天窗可分别关联实体，开窗玻璃渐隐
+- 🛞 胎压 + 胎温 HUD（左下角），俯视时显示在四个轮毂旁；油量条 HUD（右下角），均可开关
+- 🔖 中国车牌（蓝牌/绿牌），前后牌照自动贴到车身
+- 🔄 自动旋转（可用 input_boolean 控制）、引擎运转时车轮转动 + 车身怠速微震
+- 👆 点击车身进入俯视模式
 
-## 安装
+## HACS 安装（推荐）
 
-### 方式一：HACS（推荐）
+1. HACS → 右上角 ⋮ → **自定义存储库** → 仓库地址填本仓库 → 类别选 **Lovelace（仪表盘）** → 添加
+2. 在 HACS 中打开「3D 汽车展示卡片」→ 下载
+3. HACS 会将 `release.zip` 解压到 `/config/www/community/ha-car-3d-card/`（含模型与全部依赖）
+4. 检查资源是否已注册：**设置 → 仪表盘 → 资源**，若无则手动添加：
+   - URL：`/local/community/ha-car-3d-card/car-3d-card.js`
+   - 类型：`JavaScript 模块`
+5. 仪表盘添加卡片，搜索「3D 汽车」或手写配置（见下文）
 
-1. HACS → 前端 → 右上角 ⋯ → 自定义存储库
-2. 添加本仓库地址，类别选择 **Lovelace**
-3. 在 HACS 中搜索 "Car 3D" 安装
+> 卡片会自动按以下顺序查找依赖与模型：配置的 `base` → `/local/car3d` → `/local/community/ha-car-3d-card` → CDN。HACS 安装后**无需任何 base 配置**即可工作。
 
-### 方式二：手动安装
+## 手动安装
 
-将仓库内所有文件复制到 HA 配置目录：
+1. 下载 `release.zip`，解压得到 16 个文件
+2. 整体放入 `/config/www/car3d/`（或任意 www 下目录）
+3. 资源：**设置 → 仪表盘 → 资源 → 添加**，URL 填 `/local/car3d/car-3d-card.js`，类型 `JavaScript 模块`
 
-```
-config/www/car3d/
-```
-
-> **仅复制 car-3d-card.js 也能用**：依赖（three.js 等）缺失时自动从 jsDelivr/unpkg CDN 回退加载；本地模型缺失时自动从 GitHub 仓库下载演示模型（约 44MB，仅一次）。完全离线环境需复制全部文件。
-
-然后在仪表盘资源中添加（或编辑 `.storage/lovelace_resources`）：
-
-```yaml
-url: /local/car3d/car-3d-card.js
-type: module
-```
-
-## 快速开始
+## 最小配置
 
 ```yaml
 type: custom:car-3d-card
-title: 坦克 300
+title: 我的汽车
 plate_number: 甘M·DM815
 plate_type: blue
-bg_color: '#0e0e0e'
-auto_rotate: false
-rotate_speed: 1.0
-height: 400
 ```
 
-> HACS 安装路径为 `/local/community/ha-car-3d-card`，需追加：
-> ```yaml
-> base: /local/community/ha-car-3d-card
-> model: /local/community/ha-car-3d-card/weimingming.glb
-> ```
-
-## 实体绑定
+## 完整配置示例
 
 ```yaml
 type: custom:car-3d-card
+title: 坦克300 · 甘M DM815
+height: 480
+bg_color: '#0e0e0e'        # 背景颜色
+bg_opacity: 1              # 背景不透明度 0~1，<1 时透出卡片背后
+ground_size: 1.2           # 地面展示盘直径（车长倍数，默认1.2）
+light_color: '#fff2cc'     # 大灯颜色
+light_brightness: 1.4      # 灯光亮度倍率（仅大灯；尾灯恒定）
 plate_number: 甘M·DM815
-
-# 车门（短键/长键均可，state: on/open/unlocked = 开）
+plate_type: blue           # blue | green
+# —— 车门（lock 或 binary_sensor，on/unlock = 开门）——
 door_entities:
-  lf: binary_sensor.car_door_lf    # 或 lf_door
-  rf: binary_sensor.car_door_rf
-  lr: binary_sensor.car_door_lr
-  rr: binary_sensor.car_door_rr
-  trunk: binary_sensor.car_trunk
-
-# 单一门锁实体（未配置单独门实体时，解锁=全车门开）
-door_lock_entity: lock.car_door
-
-# 车灯
-headlight_entity: light.car_headlight
-taillight_entity: light.car_taillight
-light_entity: light.car_light      # 大小灯共用时配置（优先级低于上面两个）
-
-# 车窗（仅影响四个车门玻璃）
-window_entity: binary_sensor.car_window
-# 四窗独立控制（优先级高于统一实体）
+  lf_door: lock.tank300_door_lf
+  rf_door: lock.tank300_door_rf
+  lr_door: lock.tank300_door_lr
+  rr_door: lock.tank300_door_rr
+  trunk: lock.tank300_trunk
+door_angle: 62             # 车门开启角度
+trunk_angle: 75            # 尾门开启角度
+# —— 车灯（任一大灯类实体亮则大灯亮）——
+headlight_entity: light.tank300_head
+low_beam_entity: light.tank300_low    # 近光（可选）
+high_beam_entity: light.tank300_high  # 远光（可选）
+taillight_entity: light.tank300_tail
+# —— 车窗（binary_sensor，on/open = 开窗玻璃渐隐）——
 window_entities:
-  lf: binary_sensor.window_lf
-  rf: binary_sensor.window_rf
-  lr: binary_sensor.window_lr
-  rr: binary_sensor.window_rr
-
-# 胎压 + 温度（温度读 state 或 temperature 属性）
+  lf: binary_sensor.tank300_win_lf
+  rf: binary_sensor.tank300_win_rf
+  lr: binary_sensor.tank300_win_lr
+  rr: binary_sensor.tank300_win_rr
+  top: binary_sensor.tank300_sunroof   # 顶窗/天窗（可选）
+# —— 胎压 / 胎温 / 油量 ——
+show_tpms: true            # 左下角胎压 HUD（俯视轮毂标签始终显示）
+show_fuel: true            # 右下角油量 HUD
 tpms:
-  lf: sensor.tire_lf_pressure
-  rf: sensor.tire_rf_pressure
-  lr: sensor.tire_lr_pressure
-  rr: sensor.tire_rr_pressure
   unit: bar
+  lf: sensor.tank300_tpms_lf
+  rf: sensor.tank300_tpms_rf
+  lr: sensor.tank300_tpms_lr
+  rr: sensor.tank300_tpms_rr
   temp:
-    lf: sensor.tire_lf_temp
-    rf: sensor.tire_rf_temp
-    lr: sensor.tire_lr_temp
-    rr: sensor.tire_rr_temp
-
-# 油量（state 为百分比数值）
-fuel_entity: sensor.car_fuel
-
-# 自动旋转开关实体（按钮远程控制自转）
-auto_rotate_entity: input_boolean.car_rotate
-
-# 引擎状态（on / 数值>0 = 运转）：运转时车轮旋转模拟前进 + 怠速微震
-engine_entity: binary_sensor.car_engine
-# 可选：车速实体(km/h)，按实际车速调节轮速（缺省用 wheel_cruise_speed 巡航速度）
-wheel_speed_entity: sensor.car_speed
+    lf: sensor.tank300_tire_temp_lf
+    rf: sensor.tank300_tire_temp_rf
+    lr: sensor.tank300_tire_temp_lr
+    rr: sensor.tank300_tire_temp_rr
+fuel_entity: sensor.tank300_fuel
+# —— 旋转 / 引擎 ——
+auto_rotate: false
+rotate_speed: 1.2
+auto_rotate_entity: input_boolean.tank300_rotate
+engine_entity: binary_sensor.tank300_engine   # 运转时车轮转+怠速微震
+wheel_speed_entity: sensor.tank300_speed      # 可选：按车速调轮速
+wheel_cruise_speed: 60
+engine_shake: true
+# —— 高级 ——
+model: /local/community/ha-car-3d-card/weimingming.glb  # 默认自动查找，一般无需配置
+model_rotation: 180        # 模型水平朝向
+spotlight: true            # 开灯照亮地面
+show_ground: true
+bloom_strength: 0.55
+bloom_radius: 0.55
+bloom_threshold: 1.0
 ```
 
-## 全部配置项
+## 实体类型说明
 
-| 配置 | 默认 | 说明 |
+| 配置项 | 类型 | 状态含义 |
 |---|---|---|
-| `base` | `/local/car3d` | three.js 等资源所在 URL 路径 |
-| `model` | `{base}/weimingming.glb` | GLB 模型地址 |
-| `title` | 空 | 卡片标题（空则不显示） |
-| `height` | `400` | 卡片高度（px） |
-| `bg_color` | `#0e0e0e` | 背景颜色 |
-| `plate_number` | 空 | 车牌号（空则不显示车牌） |
-| `plate_type` | `blue` | 车牌颜色：`blue` 蓝牌 / `green` 绿牌 |
-| `plate_height` | `0.34` | 前牌离地高度（占车高比例） |
-| `plate_rear` | 见源码 | 后牌定位 `{front, side, height, tilt}`，tilt 为绕竖轴微旋角 |
-| `auto_rotate` | `false` | 默认自动旋转 |
-| `rotate_speed` | `1.0` | 旋转速度 |
-| `auto_rotate_entity` | 空 | 自转控制实体 |
-| `door_angle` | `62` | 车门开合角度（度） |
-| `trunk_angle` | `75` | 尾门开合角度（度） |
-| `door_entities` | 空 | 5 门实体映射 |
-| `door_lock_entity` | 空 | 门锁实体 |
-| `headlight_entity` / `taillight_entity` / `light_entity` | 空 | 车灯实体 |
-| `window_entity` | 空 | 车窗统一实体 |
-| `window_entities` | 空 | 四窗独立实体 `{lf, rf, lr, rr}`（优先） |
-| `tpms` | 空 | 胎压/温度实体映射 + `unit` |
-| `fuel_entity` | 空 | 油量实体 |
-| `engine_entity` | 空 | 引擎状态实体（on/数值>0 = 运转，驱动车轮旋转+微震） |
-| `wheel_speed_entity` | 空 | 车速实体（km/h），运转时按车速调轮速 |
-| `wheel_cruise_speed` | `60` | 无车速实体时的模拟巡航速度（km/h） |
-| `engine_shake` | `true` | 引擎运转时怠速微震 |
-| `light_color` | `#fff2cc` | 大灯颜色 |
-| `headlight_pos` / `taillight_pos` | 见源码 | 灯位比例定位 `{front, side, height}` |
-| `spotlight` | `true` | 开灯时照亮地面 |
-| `bloom_strength` | `0.55` | 泛光强度 |
-| `bloom_radius` | `0.55` | 泛光羽化半径 |
-| `bloom_threshold` | `1.0` | 泛光阈值 |
-| `model_rotation` | `180` | 模型水平朝向（度） |
-| `model_fix_roll` | `-90` | 模型姿态修正（度） |
-| `show_ground` | `true` | 显示地面 |
-| `wheel_spin` | `false` | 车轮持续自转（展示用） |
+| `door_entities` / `door_lock_entity` | lock / binary_sensor | `unlocked`/`on`/`open` = 门开 |
+| `headlight_entity` / `low_beam_entity` / `high_beam_entity` / `taillight_entity` / `light_entity` | light | `on` = 灯亮 |
+| `window_entities` / `window_entity` | binary_sensor / cover | `on`/`open` = 开窗（玻璃渐隐） |
+| `tpms.*` / `tpms.temp.*` | sensor | 数值 |
+| `fuel_entity` | sensor | 0-100 或 0-1 |
+| `auto_rotate_entity` | input_boolean | `on` = 自转 |
+| `engine_entity` | binary_sensor / sensor | `on` 或数值 > 0 = 运转 |
 
-## 交互
+## 说明
 
-- **拖动**：旋转视角 / 滚轮缩放
-- **点击车身**：切换俯视 ↔ 原视角（俯视下车头朝上、轮毂处显示胎压温度、强制停转）
-
-## 使用自己的模型
-
-替换 `model` 指向你的 GLB。模型需为 **Y-up** 且车门铰链符合以下节点名（坦克 300 IFC 导出结构）：
-
-- 车门铰链：`Dummy001`~`Dummy005`（左前/左后/尾门/右前/右后）、尾门附加 `Dummy010`
-- 车轮：`Dummy006`/`Dummy007`
-- 车门玻璃：`26_lf_door_glass` 等
-
-其他模型需在源码 `DOOR_DUMMIES`/`DOOR_GLASS`/`WHEEL_DUMMIES` 名单中适配节点名。
-
-## 致谢
-
-- [Three.js](https://threejs.org/) r162
-- 演示模型取自懂车帝坦克 300 车型页
-
-## License
-
-MIT
+- 默认模型约 44MB，首次加载稍慢，浏览器会缓存
+- 模型归一化尺寸：车长按 3.2 单位缩放，车牌/灯位/地面盘均按比例自动定位
+- 若模型文件缺失且未配置 `model`，会自动尝试 HACS 目录与 GitHub 备用地址

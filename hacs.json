@@ -1,6 +1,6 @@
 {
-  "name": "Car 3D Card",
-  "content_in_root": true,
+  "name": "3D 汽车展示卡片",
   "render_readme": true,
-  "filename": "car-3d-card.js"
+  "zip_release": true,
+  "filename": "release.zip"
 }

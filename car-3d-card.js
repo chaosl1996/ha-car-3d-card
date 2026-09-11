@@ -1,16 +1,18 @@
 (function () {
   'use strict';
+  console.info('%c CAR-3D-CARD %c v5.0.0 ', 'background:#4a8bff;color:#fff;border-radius:3px 0 0 3px;padding:1px 4px', 'background:#222;color:#fff;border-radius:0 3px 3px 0;padding:1px 4px');
   const DEFAULT_BASE = '/local/car3d';
-  let _mods = null;
-  function loadMods(base) {
-    if (_mods) return Promise.resolve(_mods);
-    // import() 相对路径基于脚本 URL 解析，先把相对 base 转为以 / 开头的绝对路径（基于页面 URL）
-    let abs = base || DEFAULT_BASE;
+  const HACS_BASE = '/local/community/ha-car-3d-card'; // HACS zip_release 解压目录
+  const GITHUB_MODEL = 'https://raw.githubusercontent.com/chaosl1996/ha-car-3d-card/main/weimingming.glb';
+  function normBase(b) {
+    let abs = b || DEFAULT_BASE;
     if (abs[0] !== '/' && !/^https?:/i.test(abs)) {
       try { abs = new URL(abs, document.baseURI).pathname; } catch (e) { abs = DEFAULT_BASE; }
     }
-    const finish = mods => { _mods = mods; return mods; };
-    // 先本地，失败回退 CDN（依赖文件未随卡片部署到 /local/car3d 时仍可用）
+    return abs;
+  }
+  let _mods = null;
+  function loadFromBase(abs) {
     return Promise.all([
       import(abs + '/three.module.js'),
       import(abs + '/GLTFLoader.js'),
@@ -31,7 +33,18 @@
         OutputPass: pp[3].OutputPass
       } : null;
       return { THREE: r[0], GLTFLoader: r[1].GLTFLoader, OrbitControls: r[2].OrbitControls, post };
-    }).catch(err => {
+    });
+  }
+  function loadMods(base) {
+    if (_mods) return Promise.resolve(_mods);
+    const finish = mods => { _mods = mods; return mods; };
+    // 依次尝试：配置 base → HACS 安装路径 → CDN
+    const candidates = [normBase(base)];
+    const hacs = normBase(HACS_BASE);
+    if (candidates.indexOf(hacs) < 0) candidates.push(hacs);
+    let p = Promise.reject(new Error('init'));
+    candidates.forEach(c => { p = p.catch(() => loadFromBase(c)); });
+    return p.catch(err => {
       console.warn('[car-3d-card] 本地依赖加载失败，尝试 CDN 回退：', err && err.message);
       return loadFromCDN('https://cdn.jsdelivr.net/npm/three@0.162.0')
         .catch(() => loadFromCDN('https://unpkg.com/three@0.162.0'));
@@ -145,15 +158,20 @@
         title: '',
         height: 400,
         bg_color: '#0e0e0e',
+        bg_opacity: 1,         // 背景不透明度 0~1（<1 时透出卡片背后的仪表盘）
         model_rotation: 180,   // 水平朝向（绕垂直轴）
         model_fix_roll: -90,   // 姿态修正：模型 +Z 为上（IFC Z-up），绕 X 轴 -90° 使 +Z → +Y
         door_angle: 62,
         trunk_angle: 75,
         light_color: '#fff2cc',
+        light_brightness: 1.4, // 灯光亮度倍率（大小灯自发光与投灯强度）
         auto_rotate: false,
         rotate_speed: 1.0,
         wheel_spin: false,
         show_ground: true,
+        ground_size: 1.2,      // 地面圆盘直径（车长归一化尺寸 3.2 的倍数）
+        show_tpms: true,       // 左下胎压 HUD（含俯视轮毂标签）
+        show_fuel: true,       // 右下油量 HUD
         show_beam: true,
         beam_intensity: 0.5,
         spotlight: true,
@@ -170,6 +188,8 @@
         door_entities: null,
         door_lock_entity: null,
         headlight_entity: null,
+        low_beam_entity: null,    // 近光灯实体（与大灯/远光任一亮则大灯亮）
+        high_beam_entity: null,   // 远光灯实体
         taillight_entity: null,
         light_entity: null,
         window_entity: null,
@@ -220,6 +240,25 @@
       this._lightColor = null; this._controls = null; this._trunkPivot = null;
     }
 
+    // 背景色 → [r,g,b]（非 hex 返回 null）
+    _bgRgb() {
+      const c = String(this._config.bg_color || '#0e0e0e').trim();
+      const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(c);
+      if (!m) return null;
+      let hex = m[1];
+      if (hex.length === 3) hex = hex.split('').map(x => x + x).join('');
+      const n = parseInt(hex, 16);
+      return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    }
+
+    // 背景色 → CSS（含透明度；非 hex 颜色值原样透传）
+    _bgCss() {
+      const rgb = this._bgRgb();
+      const a = Math.min(1, Math.max(0, toNum(this._config.bg_opacity, 1)));
+      if (!rgb) return String(this._config.bg_color || '#0e0e0e').trim();
+      return 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + a + ')';
+    }
+
     _buildShell() {
       const root = this.shadowRoot;
       root.innerHTML = '';
@@ -232,7 +271,7 @@
         card.appendChild(t);
       }
       const wrap = document.createElement('div');
-      wrap.style.cssText = 'position:relative;width:100%;height:' + this._config.height + 'px;background:' + this._config.bg_color + ';';
+      wrap.style.cssText = 'position:relative;width:100%;height:' + this._config.height + 'px;background:' + this._bgCss() + ';';
       const tip = document.createElement('div');
       tip.textContent = '3D 模型加载中…';
       tip.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#aaa;font-size:14px;';
@@ -242,22 +281,25 @@
 
       const hud = document.createElement('div');
       hud.style.cssText = 'position:absolute;left:10px;bottom:10px;right:10px;display:flex;justify-content:space-between;align-items:flex-end;pointer-events:none;font-size:12px;color:var(--primary-text-color,#fff);text-shadow:0 1px 2px rgba(0,0,0,.8);';
-      const tpmsBox = document.createElement('div');
-      tpmsBox.style.cssText = 'display:grid;grid-template-columns:repeat(2,minmax(44px,auto));gap:3px 8px;background:rgba(0,0,0,.35);padding:6px 8px;border-radius:8px;';
-      ['lf', 'rf', 'lr', 'rr'].forEach(pos => {
-        const b = document.createElement('div');
-        const n = document.createElement('span');
-        const posMap = { lf: 'FL', rf: 'FR', lr: 'RL', rr: 'RR' };
-        n.textContent = posMap[pos];
-        n.style.cssText = 'display:inline-block;width:18px;color:#8cf;font-weight:600;';
-        const v = document.createElement('span');
-        v.textContent = '--';
-        v.dataset.k = 'tpms-' + pos;
-        b.appendChild(n); b.appendChild(v);
-        tpmsBox.appendChild(b);
-      });
-      hud.appendChild(tpmsBox);
-      this._tpmsBox = tpmsBox;
+      this._tpmsBox = null;
+      if (this._config.show_tpms) {
+        const tpmsBox = document.createElement('div');
+        tpmsBox.style.cssText = 'display:grid;grid-template-columns:repeat(2,minmax(44px,auto));gap:3px 8px;background:rgba(0,0,0,.35);padding:6px 8px;border-radius:8px;';
+        ['lf', 'rf', 'lr', 'rr'].forEach(pos => {
+          const b = document.createElement('div');
+          const n = document.createElement('span');
+          const posMap = { lf: 'FL', rf: 'FR', lr: 'RL', rr: 'RR' };
+          n.textContent = posMap[pos];
+          n.style.cssText = 'display:inline-block;width:18px;color:#8cf;font-weight:600;';
+          const v = document.createElement('span');
+          v.textContent = '--';
+          v.dataset.k = 'tpms-' + pos;
+          b.appendChild(n); b.appendChild(v);
+          tpmsBox.appendChild(b);
+        });
+        hud.appendChild(tpmsBox);
+        this._tpmsBox = tpmsBox;
+      }
       const centerBox = document.createElement('div');
       centerBox.style.cssText = 'display:flex;flex-direction:column;gap:4px;align-items:center;';
       this._rotateBtn = null;
@@ -272,23 +314,25 @@
       hud.appendChild(centerBox);
       const rightBox = document.createElement('div');
       rightBox.style.cssText = 'display:flex;flex-direction:column;gap:4px;align-items:flex-end;';
-      const fuelBox = document.createElement('div');
-      fuelBox.style.cssText = 'background:rgba(0,0,0,.35);padding:6px 10px;border-radius:8px;min-width:84px;';
-      const fuelTitle = document.createElement('div');
-      fuelTitle.style.cssText = 'color:#fc8;font-weight:600;';
-      fuelTitle.textContent = '油量';
-      const fuelBar = document.createElement('div');
-      fuelBar.style.cssText = 'width:80px;height:6px;background:rgba(255,255,255,.15);border-radius:3px;overflow:hidden;margin-top:2px;';
-      const fuelFill = document.createElement('div');
-      fuelFill.style.cssText = 'height:100%;width:0%;background:linear-gradient(90deg,#fa3,#fd6);transition:width .3s;';
-      fuelFill.dataset.k = 'fuel-bar';
-      fuelBar.appendChild(fuelFill);
-      const fuelText = document.createElement('div');
-      fuelText.style.cssText = 'font-size:12px;margin-top:2px;';
-      fuelText.dataset.k = 'fuel-text';
-      fuelText.textContent = '--';
-      fuelBox.appendChild(fuelTitle); fuelBox.appendChild(fuelBar); fuelBox.appendChild(fuelText);
-      rightBox.appendChild(fuelBox);
+      if (this._config.show_fuel) {
+        const fuelBox = document.createElement('div');
+        fuelBox.style.cssText = 'background:rgba(0,0,0,.35);padding:6px 10px;border-radius:8px;min-width:84px;';
+        const fuelTitle = document.createElement('div');
+        fuelTitle.style.cssText = 'color:#fc8;font-weight:600;';
+        fuelTitle.textContent = '油量';
+        const fuelBar = document.createElement('div');
+        fuelBar.style.cssText = 'width:80px;height:6px;background:rgba(255,255,255,.15);border-radius:3px;overflow:hidden;margin-top:2px;';
+        const fuelFill = document.createElement('div');
+        fuelFill.style.cssText = 'height:100%;width:0%;background:linear-gradient(90deg,#fa3,#fd6);transition:width .3s;';
+        fuelFill.dataset.k = 'fuel-bar';
+        fuelBar.appendChild(fuelFill);
+        const fuelText = document.createElement('div');
+        fuelText.style.cssText = 'font-size:12px;margin-top:2px;';
+        fuelText.dataset.k = 'fuel-text';
+        fuelText.textContent = '--';
+        fuelBox.appendChild(fuelTitle); fuelBox.appendChild(fuelBar); fuelBox.appendChild(fuelText);
+        rightBox.appendChild(fuelBox);
+      }
       hud.appendChild(rightBox);
       wrap.appendChild(hud);
       this._hud = hud;
@@ -361,6 +405,7 @@
 
     _updateTopHud() {
       const on = !!this._topView;
+      // show_tpms 只隐藏左下角胎压 HUD；俯视轮毂标签始终显示
       Object.keys(this._wheelTags || {}).forEach(k => {
         const d = this._wheelTags[k];
         if (d) d.style.display = on ? 'block' : 'none';
@@ -382,6 +427,7 @@
         const w0 = wrap.clientWidth || 400, h0 = wrap.clientHeight || this._config.height;
         renderer.setSize(w0, h0);
         renderer.outputColorSpace = THREE.SRGBColorSpace;
+        renderer.setClearColor(0x000000, 0); // 画布空区域保持透明，背景色由 DOM 容器（bg_color/bg_opacity）承担
         wrap.insertBefore(renderer.domElement, wrap.firstChild);
         this._renderer = renderer;
         this._post = post || null;
@@ -434,12 +480,26 @@
           try {
             const composer = new this._post.EffectComposer(renderer);
             composer.addPass(new this._post.RenderPass(scene, camera));
-            composer.addPass(new this._post.UnrealBloomPass(
+            const bloomPass = new this._post.UnrealBloomPass(
               new THREE.Vector2(w0, h0),
               toNum(this._config.bloom_strength, 0.55),
               toNum(this._config.bloom_radius, 0.55),
               toNum(this._config.bloom_threshold, 1.0)
-            ));
+            );
+            // 上游 UnrealBloomPass 的模糊输出 alpha 恒为 1，经叠加后整幅画布不透明，
+            // DOM 背景色（bg_color/bg_opacity）会被纯黑盖住。运行时改写合成着色器：
+            // alpha 取辉光亮度 —— 车体不透明、辉光边缘按亮度半透明、空区域全透明。
+            bloomPass.compositeMaterial.fragmentShader = bloomPass.compositeMaterial.fragmentShader
+              .replace(
+                'gl_FragColor = bloomStrength * ( lerpBloomFactor(bloomFactors[0])',
+                'vec4 bloom = bloomStrength * ( lerpBloomFactor(bloomFactors[0])'
+              )
+              .replace(
+                'texture2D(blurTexture5, vUv) );',
+                'texture2D(blurTexture5, vUv) );\n\t\t\t\tgl_FragColor = vec4(bloom.rgb, dot(bloom.rgb, vec3(0.2126, 0.7152, 0.0722)));'
+              );
+            bloomPass.compositeMaterial.needsUpdate = true;
+            composer.addPass(bloomPass);
             composer.addPass(new this._post.OutputPass());
             this._composer = composer;
           } catch (e) { console.warn('[car-3d-card] bloom unavailable', e); this._composer = null; }
@@ -450,12 +510,21 @@
         try {
           gltf = await loader.loadAsync(this._config.model);
         } catch (e) {
-          // 本地模型缺失：未显式配置 model 时回退 GitHub 仓库演示模型（约44MB，仅一次）
-          if (!this._modelExplicit && !this._triedModelCDN) {
-            this._triedModelCDN = true;
-            if (this._tip) this._tip.textContent = '本地模型缺失，正在从 GitHub 下载演示模型（约 44MB）…';
-            gltf = await loader.loadAsync('https://raw.githubusercontent.com/chaosl1996/ha-car-3d-card/main/weimingming.glb');
-          } else throw e;
+          // 本地模型缺失：未显式配置 model 时依次尝试 HACS 安装路径 → GitHub 演示模型（约44MB，仅一次）
+          if (this._modelExplicit || this._triedModelCDN) throw e;
+          this._triedModelCDN = true;
+          const alts = [];
+          const hacsModel = normBase(HACS_BASE) + '/weimingming.glb';
+          if (hacsModel !== this._config.model) alts.push(hacsModel);
+          alts.push(GITHUB_MODEL);
+          for (const u of alts) {
+            try {
+              if (this._tip) this._tip.textContent = '本地模型缺失，正在尝试备用地址加载（约 44MB）…';
+              gltf = await loader.loadAsync(u);
+              break;
+            } catch (e2) { /* 尝试下一个 */ }
+          }
+          if (!gltf) throw e;
         }
         const model = gltf.scene;
         this._model = model;
@@ -505,20 +574,32 @@
         };
         this._projRange = projRange;
 
-        // 地面（径向渐隐，接收阴影与车灯投影）
+        // 地面展示盘（径向渐隐至透明，接收阴影与车灯投影；直径随 ground_size 可调）
+        // 盘面随背景明暗自适应：深色背景=展厅深色盘；浅色背景=中性软阴影
+        //（浅色下若沿用深色盘，渐变平台肩会呈现一圈灰色断层）
         if (this._config.show_ground) {
-          const gsize = 3.2 * 1.4;
-          const gc = document.createElement('canvas'); gc.width = gc.height = 256;
+          const gsize = 3.2 * toNum(this._config.ground_size, 1.2);
+          const rgb = this._bgRgb();
+          const lum = rgb ? (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255 : 0;
+          const gc = document.createElement('canvas'); gc.width = gc.height = 512;
           const gctx = gc.getContext('2d');
-          const grad = gctx.createRadialGradient(128, 128, 10, 128, 128, 128);
-          grad.addColorStop(0, '#26262a');
-          grad.addColorStop(0.55, '#141416');
-          grad.addColorStop(1, '#0c0c0e');
-          gctx.fillStyle = grad; gctx.fillRect(0, 0, 256, 256);
+          const grad = gctx.createRadialGradient(256, 256, 20, 256, 256, 256);
+          if (lum >= 0.5) {
+            // 浅色背景：软影，(1-t)² 缓出 —— 无平台、外缘 alpha 归零无硬边。
+            // 中心 0.55 保持足够灰度，开灯时光池（加亮至近白）才有对比
+            [0, 0.3, 0.6, 0.85].forEach(t =>
+              grad.addColorStop(t, 'rgba(13,14,17,' + (0.55 * Math.pow(1 - t, 2)).toFixed(3) + ')'));
+            grad.addColorStop(1, 'rgba(13,14,17,0)');
+          } else {
+            grad.addColorStop(0, 'rgba(38,38,42,1)');
+            grad.addColorStop(0.55, 'rgba(20,20,22,0.85)');
+            grad.addColorStop(1, 'rgba(12,12,14,0)');
+          }
+          gctx.fillStyle = grad; gctx.fillRect(0, 0, 512, 512);
           const gTex = new THREE.CanvasTexture(gc); gTex.colorSpace = THREE.SRGBColorSpace;
           const ground = new THREE.Mesh(
             new THREE.CircleGeometry(gsize, 64),
-            new THREE.MeshStandardMaterial({ map: gTex, roughness: 0.92, metalness: 0.05 })
+            new THREE.MeshStandardMaterial({ map: gTex, roughness: 0.92, metalness: 0.05, transparent: true })
           );
           ground.rotation.x = -Math.PI / 2;
           ground.position.y = this._groundY + 0.002;
@@ -637,13 +718,19 @@
           transparent: true, opacity: 0.4
         }));
 
-        // ===== 车窗（全部统一：同一材质同透明度，弃用模型原始白雾贴图）=====
+        // ===== 车窗分级：前挡清亮；其余玻璃统一墨镜色（深色半透，可窥内）=====
         this._windows = [];
-        const GLASS_OPACITY = 0.40;
-        const mkGlassMat = () => new THREE.MeshPhysicalMaterial({
-          color: 0x9fb8c4, roughness: 0.08, metalness: 0.0,
-          transparent: true, opacity: GLASS_OPACITY,
-          envMapIntensity: 0.9, clearcoat: 0.5, clearcoatRoughness: 0.1
+        const WINDSHIELD_OPACITY = 0.22; // 前挡：透亮（雾感主要来自环境反射，需同时降反射）
+        const TINTED_OPACITY = 0.93;     // 墨镜玻璃：深色雾面，隐约可见车内轮廓
+        const mkGlassMat = (type) => new THREE.MeshPhysicalMaterial({
+          color: type === 'windshield' ? 0xa9c1cd : 0x14181c,
+          roughness: type === 'windshield' ? 0.08 : 0.6,
+          metalness: 0.0,
+          transparent: true, opacity: type === 'windshield' ? WINDSHIELD_OPACITY : TINTED_OPACITY,
+          // 前挡降低环境反射与清漆，否则顶光在玻璃上形成白膜显得雾蒙蒙
+          envMapIntensity: type === 'windshield' ? 0.3 : 0.9,
+          clearcoat: type === 'windshield' ? 0.15 : 0.5,
+          clearcoatRoughness: 0.1
         });
         model.traverse(o => {
           if (!o.isMesh) return;
@@ -651,11 +738,13 @@
           let type = null;
           for (const k of Object.keys(DOOR_GLASS)) if (DOOR_GLASS[k] === bnm) { type = 'door'; break; }
           if (!type && bnm === '08_car_body_glass') type = 'windshield';
-          if (!type && EXTRA_GLASS.indexOf(bnm) >= 0) type = 'top';
+          // 顶窗/天窗：可关联实体单独开关；其余固定玻璃（尾门玻璃/后角窗）恒定
+          if (!type && (bnm === '13_car_top_glass' || bnm === '60_plastic_tianchuang')) type = 'top';
+          if (!type && EXTRA_GLASS.indexOf(bnm) >= 0) type = 'fixed';
           if (!type) return;
-          const nm = mkGlassMat();
+          const nm = mkGlassMat(type);
           o.material = nm; // 统一替换（含数组材质，单材质渲染全部组）
-          this._windows.push({ mesh: o, type, saved: [{ m: nm }], base: GLASS_OPACITY });
+          this._windows.push({ mesh: o, type, saved: [{ m: nm }], base: nm.opacity });
         });
 
         // ===== 车灯 mesh（严格匹配，排除牌照等）=====
@@ -857,7 +946,9 @@
         // 灯光特效=物理光照：SpotLight 向外投射照亮地面（配合灯体 emissive+bloom 泛光）
         // 不再叠加任何 sprite/贴图光晕——此前多版叠加光效是"假光"的根源
         if (c.spotlight) {
-          const sl = new THREE.SpotLight(new THREE.Color(color), isHead ? 18 : 7, 14, Math.PI / 5, 0.85, 1.6);
+          const lb = toNum(c.light_brightness, 1);
+          // 亮度倍率只作用于大灯投灯；尾灯保持原始强度（过亮会把整个车尾染红）
+          const sl = new THREE.SpotLight(new THREE.Color(color), isHead ? 18 * lb : 7, 14, Math.PI / 5, 0.85, 1.6);
           const target = new THREE.Object3D();
           target.position.copy(dirVec.clone().multiplyScalar(5));
           group.add(sl); group.add(target);
@@ -999,9 +1090,13 @@
     _lightsEff() {
       const c = this._config;
       let head = false, tail = false;
-      if (c.headlight_entity) {
-        const s = readState(this._hass, c.headlight_entity);
-        if (s != null) head = isTruthy(s);
+      // 大灯 = 大灯/近光/远光实体任一亮（模型只有一个大灯视觉，近远光仅并联开关）
+      const headEnts = [c.headlight_entity, c.low_beam_entity, c.high_beam_entity].filter(Boolean);
+      if (headEnts.length) {
+        head = headEnts.some(ent => {
+          const s = readState(this._hass, ent);
+          return s != null && isTruthy(s);
+        });
       } else if (c.light_entity) {
         head = isTruthy(readState(this._hass, c.light_entity));
       }
@@ -1026,7 +1121,8 @@
       });
       this._winOpenTgt = {
         lf: this._windowState('lf') ? 1 : 0, rf: this._windowState('rf') ? 1 : 0,
-        lr: this._windowState('lr') ? 1 : 0, rr: this._windowState('rr') ? 1 : 0
+        lr: this._windowState('lr') ? 1 : 0, rr: this._windowState('rr') ? 1 : 0,
+        top: this._windowState('top') ? 1 : 0
       };
 
       let rot = this._rotateStateEff();
@@ -1103,8 +1199,8 @@
       const TGTKEY = { '26_lf_door_glass': 'lf', '32_lr_door_glass': 'lr', '35_rf_door_glass': 'rf', '41_rr_door_glass': 'rr' };
       this._windows.forEach(w => {
         const base = w.base || 0.4;
-        if (w.type !== 'door') { w.saved.forEach(sd => { if (sd.m) sd.m.opacity = base; }); return; }
-        const k = TGTKEY[w.mesh.name] || 'lf';
+        if (w.type !== 'door' && w.type !== 'top') { w.saved.forEach(sd => { if (sd.m) sd.m.opacity = base; }); return; }
+        const k = w.type === 'top' ? 'top' : (TGTKEY[w.mesh.name] || 'lf');
         const tgt = (this._winOpenTgt && this._winOpenTgt[k]) || 0;
         const cur = this._winCur[k] == null ? 0 : this._winCur[k];
         this._winCur[k] = cur + (tgt - cur) * 0.15;
@@ -1135,8 +1231,9 @@
           });
         });
       };
-      applyL(this._headLights, head, this._lightColor, 7.0);
-      applyL(this._tailLights, tail, this._tailLightColor, 9.0);
+      const lb = toNum(this._config.light_brightness, 1);
+      applyL(this._headLights, head, this._lightColor, 7.0 * lb);
+      applyL(this._tailLights, tail, this._tailLightColor, 9.0); // 尾灯不乘倍率，维持原亮度
       this._lampEffects.forEach(fx => { fx.group.visible = fx.isHead ? head : tail; });
 
       // 车轮：引擎运转（或 wheel_spin 强制）时绕车宽轴旋转模拟前进
@@ -1300,7 +1397,7 @@
       const el = document.createElement('input');
       el.type = 'checkbox'; el.style.cssText = 'width:18px;height:18px;';
       el.checked = !!this._get(path);
-      el.addEventListener('change', e => this._set(path, e.target.checked ? true : null));
+      el.addEventListener('change', e => this._set(path, e.target.checked ? true : false)); // 显式写 false：默认值为 true 的开关取消后才能生效
       const span = document.createElement('span'); span.textContent = label;
       lab.appendChild(el); lab.appendChild(span); parent.appendChild(lab);
     }
@@ -1359,6 +1456,7 @@
       this._text(s1.body, '标题', ['title']);
       this._num(s1.body, '卡片高度 (px)', ['height'], '10', 400);
       this._color(s1.body, '背景颜色', ['bg_color'], '#0e0e0e');
+      this._num(s1.body, '背景不透明度 (0~1，1=不透明)', ['bg_opacity'], '0.05', 1);
       cont.appendChild(s1.d);
 
       const s2 = this._section('车牌', true);
@@ -1376,17 +1474,23 @@
 
       const s4 = this._section('车灯与车窗', true);
       this._picker(s4.body, '大灯实体', ['headlight_entity'], 'light');
+      this._picker(s4.body, '近光灯实体（与大灯/远光任一亮则大灯亮）', ['low_beam_entity'], 'light');
+      this._picker(s4.body, '远光灯实体（与大灯/近光任一亮则大灯亮）', ['high_beam_entity'], 'light');
       this._picker(s4.body, '尾灯实体', ['taillight_entity'], 'light');
       this._picker(s4.body, '总灯实体（大小灯共用，优先级低于上面两个）', ['light_entity'], 'light');
       this._picker(s4.body, '车窗 · 左前', ['window_entities', 'lf'], 'binary_sensor');
       this._picker(s4.body, '车窗 · 右前', ['window_entities', 'rf'], 'binary_sensor');
       this._picker(s4.body, '车窗 · 左后', ['window_entities', 'lr'], 'binary_sensor');
       this._picker(s4.body, '车窗 · 右后', ['window_entities', 'rr'], 'binary_sensor');
+      this._picker(s4.body, '车窗 · 顶窗/天窗', ['window_entities', 'top'], 'binary_sensor');
       this._picker(s4.body, '车窗统一实体（未配单独窗实体时全部生效）', ['window_entity'], 'binary_sensor');
       this._color(s4.body, '大灯颜色', ['light_color'], '#fff2cc');
+      this._num(s4.body, '灯光亮度倍率', ['light_brightness'], '0.1', 1.4);
       cont.appendChild(s4.d);
 
       const s5 = this._section('胎压 / 温度 / 油量', true);
+      this._check(s5.body, '显示胎压 HUD（左下角与俯视轮毂标签）', ['show_tpms']);
+      this._check(s5.body, '显示油量 HUD（右下角）', ['show_fuel']);
       const posName = { lf: '左前', rf: '右前', lr: '左后', rr: '右后' };
       ['lf', 'rf', 'lr', 'rr'].forEach(k => this._picker(s5.body, '胎压 · ' + posName[k], ['tpms', k], 'sensor'));
       ['lf', 'rf', 'lr', 'rr'].forEach(k => this._picker(s5.body, '胎温 · ' + posName[k], ['tpms', 'temp', k], 'sensor'));
@@ -1412,6 +1516,7 @@
       this._num(s7.body, '泛光阈值', ['bloom_threshold'], '0.05', 1);
       this._check(s7.body, '开灯照亮地面 (spotlight)', ['spotlight']);
       this._check(s7.body, '显示地面', ['show_ground']);
+      this._num(s7.body, '地面圆盘大小 (车长倍数，默认1.2)', ['ground_size'], '0.05', 1.2);
       this._check(s7.body, '车轮持续自转 (wheel_spin)', ['wheel_spin']);
       this._num(s7.body, '前牌高度比例', ['plate_height'], '0.01', 0.34);
       this._num(s7.body, '后牌 · 沿车长位置', ['plate_rear', 'front'], '0.01', 0.97);

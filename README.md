@@ -28,6 +28,23 @@ Home Assistant Lovelace 自定义卡片：在仪表盘中展示一辆可交互�
 
 > 卡片会自动按以下顺序查找依赖与模型：配置的 `base` → `/local/car3d` → `/local/community/ha-car-3d-card` → CDN。HACS 安装后**无需任何 base 配置**即可工作。
 
+### ⚠️ HACS 安装后必看：资源清理与缓存
+
+HACS 对 `zip_release` 仓库会错误地把资源注册为 `release.zip` 本身（无法作为 JS 加载）。安装后请在 **设置 → 仪表盘 → 资源** 中：
+
+1. **删除** `/hacsfiles/ha-car-3d-card/release.zip?hacstag=...` 这条（HACS 每次更新后可能重新生成，再删一次即可）
+2. **保留/添加** `/local/community/ha-car-3d-card/car-3d-card.js`（JavaScript 模块）
+
+### 🔄 每次更新后看不到新版？
+
+HA 对 `/local` 静态文件下发 **31 天强缓存**（`Cache-Control: max-age=2678400`），浏览器会把旧 JS 钉在缓存里，强刷也不一定能打掉。更新卡片后请把资源 URL 的版本参数 +1：
+
+```
+/local/community/ha-car-3d-card/car-3d-card.js?v=50
+```
+
+（数字任意，没出现过即可。改动 URL = 缓存键变化 = 必拉新文件。）验证：F12 控制台应显示 `CAR-3D-CARD v5.0.0`。
+
 ## 手动安装
 
 1. 下载 `release.zip`，解压得到 16 个文件

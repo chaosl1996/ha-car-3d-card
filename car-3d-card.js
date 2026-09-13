@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  console.info('%c CAR-3D-CARD %c v5.1.1 ', 'background:#4a8bff;color:#fff;border-radius:3px 0 0 3px;padding:1px 4px', 'background:#222;color:#fff;border-radius:0 3px 3px 0;padding:1px 4px');
+  console.info('%c CAR-3D-CARD %c v5.2.0 ', 'background:#4a8bff;color:#fff;border-radius:3px 0 0 3px;padding:1px 4px', 'background:#222;color:#fff;border-radius:0 3px 3px 0;padding:1px 4px');
   const DEFAULT_BASE = '/local/car3d';
   const HACS_BASE = '/local/community/ha-car-3d-card'; // HACS zip_release 解压目录
   const GITHUB_MODEL = 'https://raw.githubusercontent.com/chaosl1996/ha-car-3d-card/main/weimingming.glb';
@@ -159,6 +159,7 @@
         height: 400,
         bg_color: '#0e0e0e',
         bg_opacity: 1,         // 背景不透明度 0~1（<1 时透出卡片背后的仪表盘）
+        model_size: 3.2,        // 模型归一化大小（越大车越大，地面盘/阴影/缩放范围联动）
         model_rotation: 180,   // 水平朝向（绕垂直轴）
         model_fix_roll: -90,   // 姿态修正：模型 +Z 为上（IFC Z-up），绕 X 轴 -90° 使 +Z → +Y
         door_angle: 62,
@@ -435,6 +436,9 @@
 
         const scene = new THREE.Scene();
         this._scene = scene;
+        // 模型大小（越大车越大）：阴影范围/缩放限制/目标高度/地面盘联动等比
+        const msize = toNum(this._config.model_size, 3.2);
+        const msScale = msize / 3.2;
 
         // ===== 环境光照（PMREM 程序化环境贴图 → 车漆真实反射）=====
         try {
@@ -461,8 +465,8 @@
         dir.position.set(5, 9, 6);
         dir.castShadow = true;
         dir.shadow.mapSize.set(2048, 2048);
-        dir.shadow.camera.left = -4; dir.shadow.camera.right = 4;
-        dir.shadow.camera.top = 4; dir.shadow.camera.bottom = -4;
+        dir.shadow.camera.left = -4 * msScale; dir.shadow.camera.right = 4 * msScale;
+        dir.shadow.camera.top = 4 * msScale; dir.shadow.camera.bottom = -4 * msScale;
         dir.shadow.camera.far = 30;
         dir.shadow.bias = -0.0004;
         dir.shadow.radius = 4;
@@ -533,7 +537,7 @@
         const box = new THREE.Box3().setFromObject(model);
         const size = box.getSize(new THREE.Vector3());
         const maxDim = Math.max(size.x, size.y, size.z) || 1;
-        model.scale.setScalar(3.2 / maxDim);
+        model.scale.setScalar(msize / maxDim);
         const box2 = new THREE.Box3().setFromObject(model);
         const c2 = box2.getCenter(new THREE.Vector3());
         model.position.sub(c2);
@@ -578,7 +582,7 @@
         // 盘面随背景明暗自适应：深色背景=展厅深色盘；浅色背景=中性软阴影
         //（浅色下若沿用深色盘，渐变平台肩会呈现一圈灰色断层）
         if (this._config.show_ground) {
-          const gsize = 3.2 * toNum(this._config.ground_size, 1.2);
+          const gsize = msize * toNum(this._config.ground_size, 1.2);
           const rgb = this._bgRgb();
           const lum = rgb ? (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255 : 0;
           const gc = document.createElement('canvas'); gc.width = gc.height = 512;
@@ -824,10 +828,10 @@
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
         controls.dampingFactor = 0.08;
-        controls.minDistance = 3;
-        controls.maxDistance = 14;
+        controls.minDistance = 3 * msScale;
+        controls.maxDistance = 14 * msScale;
         controls.maxPolarAngle = Math.PI / 2.05;
-        controls.target.set(0, 0.3, 0);
+        controls.target.set(0, 0.3 * msScale, 0);
         controls.update();
         this._controls = controls;
 
@@ -1510,6 +1514,7 @@
       const s7 = this._section('高级（模型与视觉效果）', false);
       this._text(s7.body, '模型 GLB 地址', ['model']);
       this._text(s7.body, '依赖基础路径 base（HACS 安装填 /local/community/ha-car-3d-card）', ['base']);
+      this._num(s7.body, '模型整体大小（默认3.2，越大越大）', ['model_size'], '0.1', 3.2);
       this._num(s7.body, '模型水平朝向 (°)', ['model_rotation'], '1', 180);
       this._num(s7.body, '泛光强度', ['bloom_strength'], '0.05', 0.55);
       this._num(s7.body, '泛光半径', ['bloom_radius'], '0.05', 0.55);

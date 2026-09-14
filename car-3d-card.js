@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  console.info('%c CAR-3D-CARD %c v5.3.0 ', 'background:#4a8bff;color:#fff;border-radius:3px 0 0 3px;padding:1px 4px', 'background:#222;color:#fff;border-radius:0 3px 3px 0;padding:1px 4px');
+  console.info('%c CAR-3D-CARD %c v5.3.1 ', 'background:#4a8bff;color:#fff;border-radius:3px 0 0 3px;padding:1px 4px', 'background:#222;color:#fff;border-radius:0 3px 3px 0;padding:1px 4px');
   const DEFAULT_BASE = '/local/car3d';
   const HACS_BASE = '/local/community/ha-car-3d-card'; // HACS zip_release 解压目录
   const GITHUB_MODEL = 'https://raw.githubusercontent.com/chaosl1996/ha-car-3d-card/main/weimingming.glb';
@@ -615,8 +615,9 @@
           const gTex = new THREE.CanvasTexture(gc); gTex.colorSpace = THREE.SRGBColorSpace;
           const ground = new THREE.Mesh(
             new THREE.CircleGeometry(gsize, 64),
-            new THREE.MeshStandardMaterial({ map: gTex, roughness: 0.92, metalness: 0.05, transparent: true })
+            new THREE.MeshStandardMaterial({ map: gTex, roughness: 0.92, metalness: 0.05, transparent: true, depthWrite: false })
           );
+          ground.renderOrder = 1; // 透明面显式排序：盘 1 → 车影 2，不随相机翻转
           ground.rotation.x = -Math.PI / 2;
           ground.position.y = this._groundY + 0.002;
           ground.receiveShadow = true;
@@ -830,11 +831,12 @@
           const cbSize = new THREE.Vector3();
           this._carBox.getSize(cbSize);
           const scGeo = new THREE.CircleGeometry(Math.max(cbSize.x, cbSize.z) * 0.95, 48);
-          const scMat = new THREE.ShadowMaterial({ opacity: 0.38 });
+          const scMat = new THREE.ShadowMaterial({ opacity: 0.38, depthWrite: false });
           const shadowCatcher = new THREE.Mesh(scGeo, scMat);
           const scCtr = this._carBox.getCenter(new THREE.Vector3());
           shadowCatcher.rotation.x = -Math.PI / 2;
-          shadowCatcher.position.set(scCtr.x, this._groundY + 0.004, scCtr.z);
+          shadowCatcher.renderOrder = 2; // 画在圆盘之后，车影叠加在盘面之上
+          shadowCatcher.position.set(scCtr.x, this._groundY + 0.008, scCtr.z);
           shadowCatcher.receiveShadow = true;
           scene.add(shadowCatcher);
           this._shadowCatcher = shadowCatcher;

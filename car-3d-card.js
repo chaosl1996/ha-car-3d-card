@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  console.info('%c CAR-3D-CARD %c v5.2.1 ', 'background:#4a8bff;color:#fff;border-radius:3px 0 0 3px;padding:1px 4px', 'background:#222;color:#fff;border-radius:0 3px 3px 0;padding:1px 4px');
+  console.info('%c CAR-3D-CARD %c v5.3.0 ', 'background:#4a8bff;color:#fff;border-radius:3px 0 0 3px;padding:1px 4px', 'background:#222;color:#fff;border-radius:0 3px 3px 0;padding:1px 4px');
   const DEFAULT_BASE = '/local/car3d';
   const HACS_BASE = '/local/community/ha-car-3d-card'; // HACS zip_release 解压目录
   const GITHUB_MODEL = 'https://raw.githubusercontent.com/chaosl1996/ha-car-3d-card/main/weimingming.glb';
@@ -173,6 +173,7 @@
         rotate_speed: 1.0,
         wheel_spin: false,
         show_ground: true,
+        show_shadow: true,      // 车影（虚化半透明接触阴影；圆台显示时圆台不再重复接收）
         ground_size: 1.2,      // 地面圆盘直径（车长归一化尺寸 3.2 的倍数）
         show_tpms: true,       // 左下胎压 HUD（含俯视轮毂标签）
         show_fuel: true,       // 右下油量 HUD
@@ -371,6 +372,12 @@
       } catch (e) { /* ignore */ }
     }
 
+    _toggleAutoRotate() {
+      if (this._config.auto_rotate_entity) { this._toggleRotate(); return; }
+      this._config.auto_rotate = !this._rotateStateEff();
+      this._applyState();
+    }
+
     // ===== 俯视模式：点击车身进入/退出 =====
     _toggleTopView() {
       const T = this.THREE;
@@ -425,7 +432,7 @@
         const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         renderer.shadowMap.enabled = true;
-        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        renderer.shadowMap.type = THREE.VSMShadowMap; // VSM：真实可调的虚化柔影
         renderer.toneMapping = THREE.ACESFilmicToneMapping;
         renderer.toneMappingExposure = 1.1;
         const w0 = wrap.clientWidth || 400, h0 = wrap.clientHeight || this._config.height;
@@ -471,8 +478,9 @@
         dir.shadow.camera.left = -4 * msScale; dir.shadow.camera.right = 4 * msScale;
         dir.shadow.camera.top = 4 * msScale; dir.shadow.camera.bottom = -4 * msScale;
         dir.shadow.camera.far = 30;
-        dir.shadow.bias = -0.0004;
-        dir.shadow.radius = 4;
+        dir.shadow.bias = -0.0002;
+        dir.shadow.radius = 10;      // VSM 虚化半径
+        dir.shadow.blurSamples = 12; // 虚化采样
         scene.add(dir);
         const dir2 = new THREE.DirectionalLight(0xbcd2ff, 0.45);
         dir2.position.set(-6, 4, -5); scene.add(dir2);
@@ -815,6 +823,24 @@
         this._groundY = this._carBox.min.y;
         if (this._ground) this._ground.position.y = this._groundY + 0.002;
 
+        // ===== 车影（虚化半透明接触阴影）=====
+        // ShadowMaterial 平面只显示投影：半透明、随 VSM 虚化模糊。
+        // 开启车影时圆台不再自身接收（避免双重加深），关闭车影则保持圆台原行为。
+        if (this._config.show_shadow !== false) {
+          const cbSize = new THREE.Vector3();
+          this._carBox.getSize(cbSize);
+          const scGeo = new THREE.CircleGeometry(Math.max(cbSize.x, cbSize.z) * 0.95, 48);
+          const scMat = new THREE.ShadowMaterial({ opacity: 0.38 });
+          const shadowCatcher = new THREE.Mesh(scGeo, scMat);
+          const scCtr = this._carBox.getCenter(new THREE.Vector3());
+          shadowCatcher.rotation.x = -Math.PI / 2;
+          shadowCatcher.position.set(scCtr.x, this._groundY + 0.004, scCtr.z);
+          shadowCatcher.receiveShadow = true;
+          scene.add(shadowCatcher);
+          this._shadowCatcher = shadowCatcher;
+          if (this._ground) this._ground.receiveShadow = false;
+        }
+
         // ===== 引擎震动组：yawGroup 与全部门 pivot 整体收入（仅平移，保持门世界对齐）=====
         const shakeGroup = new THREE.Group();
         scene.add(shakeGroup);
@@ -873,25 +899,48 @@
           }
         } catch (e) { /* 轮位获取失败则俯视无标签 */ }
 
-        // ===== 点击车身切换俯视（区分拖拽：位移>5px 不算点击）=====
-        let pdown = null;
-        renderer.domElement.addEventListener('pointerdown', e => { pdown = { x: e.clientX, y: e.clientY }; });
-        renderer.domElement.addEventListener('pointerup', e => {
-          if (!pdown) return;
-          const dx = e.clientX - pdown.x, dy = e.clientY - pdown.y;
-          pdown = null;
-          if (dx * dx + dy * dy > 25) return;
+        // ===== 点击车身切换俯视；长按车身(600ms)切换自动旋转（位移>5px 视为拖拽）=====
+        let pdown = null, lpTimer = null, lpFired = false;
+        const cancelLP = () => { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } };
+        const raycastCar = (cx, cy) => {
           const r = renderer.domElement.getBoundingClientRect();
           const ndc = new THREE.Vector2(
-            ((e.clientX - r.left) / r.width) * 2 - 1,
-            -((e.clientY - r.top) / r.height) * 2 + 1
+            ((cx - r.left) / r.width) * 2 - 1,
+            -((cy - r.top) / r.height) * 2 + 1
           );
           const ray = new THREE.Raycaster();
           ray.setFromCamera(ndc, camera);
           const carObjs = [model];
           (this._doors || []).forEach(d => carObjs.push(d.pivot));
           (this._plateMeshes || []).forEach(m => carObjs.push(m));
-          if (ray.intersectObjects(carObjs, true).length) this._toggleTopView();
+          return ray.intersectObjects(carObjs, true).length > 0;
+        };
+        renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
+        renderer.domElement.addEventListener('pointerdown', e => {
+          pdown = { x: e.clientX, y: e.clientY };
+          lpFired = false;
+          cancelLP();
+          lpTimer = setTimeout(() => {
+            lpTimer = null;
+            if (raycastCar(e.clientX, e.clientY)) {
+              lpFired = true;
+              this._toggleAutoRotate();
+            }
+          }, 600);
+        });
+        renderer.domElement.addEventListener('pointermove', e => {
+          if (!pdown || !lpTimer) return;
+          const dx = e.clientX - pdown.x, dy = e.clientY - pdown.y;
+          if (dx * dx + dy * dy > 25) cancelLP(); // 拖拽取消长按
+        });
+        renderer.domElement.addEventListener('pointerup', e => {
+          cancelLP();
+          if (!pdown) return;
+          const dx = e.clientX - pdown.x, dy = e.clientY - pdown.y;
+          pdown = null;
+          if (lpFired) return; // 长按已生效，吞掉本次 click
+          if (dx * dx + dy * dy > 25) return;
+          if (raycastCar(e.clientX, e.clientY)) this._toggleTopView();
         });
 
         this._loaded = true;
@@ -1528,6 +1577,7 @@
       this._num(s7.body, '泛光阈值', ['bloom_threshold'], '0.05', 1);
       this._check(s7.body, '开灯照亮地面 (spotlight)', ['spotlight']);
       this._check(s7.body, '显示地面', ['show_ground']);
+      this._check(s7.body, '显示车影（虚化半透明）', ['show_shadow']);
       this._num(s7.body, '地面圆盘大小 (车长倍数，默认1.2)', ['ground_size'], '0.05', 1.2);
       this._check(s7.body, '车轮持续自转 (wheel_spin)', ['wheel_spin']);
       this._num(s7.body, '前牌高度比例', ['plate_height'], '0.01', 0.34);

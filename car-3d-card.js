@@ -1,6 +1,6 @@
 (function () {
   'use strict';
-  console.info('%c CAR-3D-CARD %c v5.2.0 ', 'background:#4a8bff;color:#fff;border-radius:3px 0 0 3px;padding:1px 4px', 'background:#222;color:#fff;border-radius:0 3px 3px 0;padding:1px 4px');
+  console.info('%c CAR-3D-CARD %c v5.2.1 ', 'background:#4a8bff;color:#fff;border-radius:3px 0 0 3px;padding:1px 4px', 'background:#222;color:#fff;border-radius:0 3px 3px 0;padding:1px 4px');
   const DEFAULT_BASE = '/local/car3d';
   const HACS_BASE = '/local/community/ha-car-3d-card'; // HACS zip_release 解压目录
   const GITHUB_MODEL = 'https://raw.githubusercontent.com/chaosl1996/ha-car-3d-card/main/weimingming.glb';
@@ -133,6 +133,8 @@
   function isTruthy(s) {
     return s === 'on' || s === 'open' || s === 'unlocked' || s === true;
   }
+  // 引擎"运行中"状态词（精确匹配，小写比较；兼容传感器输出中文/英文状态）
+  const ENGINE_RUN_WORDS = ['运行中', '运行', '启动', '怠速', 'running', 'run', 'start', 'started', 'idle', 'working', 'works', 'active'];
   function toNum(v, d) {
     const n = parseFloat(v); return isNaN(n) ? d : n;
   }
@@ -160,6 +162,7 @@
         bg_color: '#0e0e0e',
         bg_opacity: 1,         // 背景不透明度 0~1（<1 时透出卡片背后的仪表盘）
         model_size: 3.2,        // 模型归一化大小（越大车越大，地面盘/阴影/缩放范围联动）
+        model_offset_y: 0,      // 模型上下平移（正=上移，跟随地面盘与全部定位）
         model_rotation: 180,   // 水平朝向（绕垂直轴）
         model_fix_roll: -90,   // 姿态修正：模型 +Z 为上（IFC Z-up），绕 X 轴 -90° 使 +Z → +Y
         door_angle: 62,
@@ -549,6 +552,7 @@
         yawGroup.rotation.y = THREE.MathUtils.degToRad(toNum(this._config.model_rotation, 0));
         rollGroup.add(model);
         yawGroup.add(rollGroup);
+        yawGroup.position.y = toNum(this._config.model_offset_y, 0); // 上下平移，包围盒/地面/灯牌定位全部跟随
         scene.add(yawGroup);
         scene.updateMatrixWorld(true);
 
@@ -1080,6 +1084,8 @@
       const st = readState(this._hass, c.engine_entity);
       if (st == null) return false;
       if (isTruthy(st)) return true;
+      const stl = String(st).trim().toLowerCase();
+      if (ENGINE_RUN_WORDS.indexOf(stl) >= 0) return true; // "运行中"等状态词
       const n = parseFloat(st);
       return !isNaN(n) && n > 0; // sensor 数值（转速/功率等）>0 视为运转
     }
@@ -1515,6 +1521,7 @@
       this._text(s7.body, '模型 GLB 地址', ['model']);
       this._text(s7.body, '依赖基础路径 base（HACS 安装填 /local/community/ha-car-3d-card）', ['base']);
       this._num(s7.body, '模型整体大小（默认3.2，越大越大）', ['model_size'], '0.1', 3.2);
+      this._num(s7.body, '模型上下平移（正=上移）', ['model_offset_y'], '0.05', 0);
       this._num(s7.body, '模型水平朝向 (°)', ['model_rotation'], '1', 180);
       this._num(s7.body, '泛光强度', ['bloom_strength'], '0.05', 0.55);
       this._num(s7.body, '泛光半径', ['bloom_radius'], '0.05', 0.55);
